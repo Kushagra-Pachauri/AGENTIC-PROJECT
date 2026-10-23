@@ -158,4 +158,98 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 
 ---
 
-*Next step: Step 3 (awaiting instructions)*
+## Step 3: MCP Tool Layer ✅
+
+**Date:** 2026-10-24
+**Status:** Complete
+
+### What was done
+
+1. **GitHub MCP Server Integration (`src/repoagent/mcp_client.py`)**:
+   - Integrated with official reference MCP server `@modelcontextprotocol/server-github` via stdio transport.
+   - Configured `get_github_params()` fetching credentials strictly from environment (`GITHUB_TOKEN` or `GITHUB_PERSONAL_ACCESS_TOKEN`).
+   - Cross-platform executable resolution via `shutil.which("npx")` to handle Windows `.CMD` shims as well as POSIX paths.
+
+2. **Repo Reader MCP Server (`src/repoagent/mcp_servers/repo_reader.py`)**:
+   - Implemented custom FastMCP server restricted to a configured workspace directory (`REPOAGENT_WORKSPACE`).
+   - Tools exposed:
+     - `list_tree(path, max_depth)`: recursive directory hierarchy with configurable depth limit, auto-filtering noise dirs (`.git`, `__pycache__`, `.venv`, `.pytest_cache`, `.ruff_cache`).
+     - `read_file(path, max_lines)`: utf-8 text file reader with line truncation safety.
+     - `search_code(pattern, path, max_results)`: regex-based code search returning `path:line_no: content`.
+   - Security invariants strictly enforced in `_resolve_safe`:
+     - Blocks relative path traversal escaping the workspace root (`../../`).
+     - Blocks absolute POSIX paths (`/etc/passwd`), Windows drive paths (`C:/Windows`), and UNC shares (`\\server\share`).
+
+3. **Test Runner Docker Sandbox MCP Server (`src/repoagent/mcp_servers/test_runner.py`)**:
+   - Built isolated container environment (`sandbox/Dockerfile`):
+     - Based on `python:3.11-slim`, non-root user `sandbox`.
+     - Pre-installed with `pytest==8.4.1`, `ruff==0.11.13`, `pydantic==2.12.5`, Node.js, and npm.
+     - Network disabled (`network_mode="none"`).
+     - Strict resource limits enforced: nano-CPUs (default 1.0), memory limit (default 512m), execution timeout (default 120s).
+   - Tools exposed:
+     - `run_tests(command)`: runs validated test suite commands, returning a structured `TestReport` model.
+     - `run_lint()`: runs `ruff check .` inside the sandbox, returning a structured `TestReport` model.
+   - Command security validation (`_validate_command`):
+     - Allowlisted commands strictly limited to: `pytest`, `ruff`, `npm test`, `eslint`.
+     - Rejects any shell injection or command chaining metacharacters (`;&|`$><\n\r`).
+
+4. **MCP Client Helpers (`src/repoagent/mcp_client.py`)**:
+   - Unified connection parameter builders:
+     - `get_repo_reader_params(workspace)`
+     - `get_test_runner_params(workspace)`
+     - `get_github_params()`
+   - Agent framework attachments:
+     - CrewAI: `get_crewai_mcp_server(params)` (for `Agent(mcps=[...])`) and `get_crewai_tools(params)` (for `Agent(tools=[...])`).
+     - Google ADK: `get_adk_toolset(params)` returning `McpToolset` with `StdioConnectionParams`.
+   - Direct execution helpers for raw MCP transport: `list_tools_direct` and `call_tool_direct`.
+
+5. **Acceptance Script & Test Suite**:
+   - Acceptance demo (`scripts/demo_tools.py`):
+     - Clones `demo_repo` into an isolated workspace directory (`runs/demo_workspace_<run_id>`).
+     - Uses `repo_reader` MCP server to inspect directory structure.
+     - Uses `test_runner` MCP server to run the 12 pytest tests inside the Docker sandbox (all passed).
+     - Creates branch `repoagent/<run_id>-<timestamp>` in `GITHUB_REPO` (live if token available, simulated fallback otherwise).
+   - Test suite (`tests/test_mcp_tools.py`): 29 comprehensive tests verifying direct tool calls, path traversal rejection, disallowed command rejection, shell injection blocking, Docker execution, timeout enforcement, and framework adapters.
+
+### How to run
+
+```bash
+# Build sandbox Docker container image
+docker build -t repoagent-sandbox:latest sandbox/
+# Or via Makefile:
+make build-sandbox
+
+# Run acceptance demo script
+python scripts/demo_tools.py
+# Or via Makefile:
+make demo-tools
+
+# Run all test suites (68 project tests + 12 demo_repo tests)
+pytest tests/ -v
+pytest demo_repo/tests/ -v
+
+# Run lint and formatting checks
+ruff check src/ tests/ scripts/ demo_repo/
+ruff format --check src/ tests/ scripts/ demo_repo/
+```
+
+### Test results
+
+| Test suite | Tests / Check | Status |
+|-----------|---------------|--------|
+| `tests/test_mcp_tools.py` | 29 unit tests | ✅ All passing |
+| `tests/test_flow.py` | 5 unit tests | ✅ All passing |
+| `tests/test_providers.py` | 7 unit tests | ✅ All passing |
+| `tests/test_schemas.py` | 27 unit tests | ✅ All passing |
+| `demo_repo/tests/` | 12 unit tests | ✅ All passing |
+| Total Tests | 80 tests across repo | ✅ 80 passed |
+| Ruff lint & formatting | 29 files | ✅ Clean (0 issues) |
+| Sandbox Docker execution | `pytest` inside container | ✅ 12 passed in 0.29s (network none, non-root) |
+
+### Known issues
+
+- None.
+
+---
+
+*Next step: Step 4 (awaiting instructions)*

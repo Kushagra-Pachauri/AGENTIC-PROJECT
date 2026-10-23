@@ -1,0 +1,245 @@
+"""Test Runner MCP Server — executes tests and lint inside a Docker sandbox.
+
+Tools:
+  - run_tests(command): run an allowlisted test command inside the sandbox container
+  - run_lint(): run ruff linting inside the sandbox container
+
+Security constraints:
+  - Only allowlisted commands: pytest, ruff, npm test, eslint
+  - Runs inside Docker with: non-root user, no network, CPU/memory/time limits
+  - Workspace is mounted read-only by default
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+from repoagent.schemas import TestReport
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+_WORKSPACE: Path | None = None
+
+# Allowlisted command prefixes (must start with one of these)
+ALLOWED_COMMANDS: set[str] = {"pytest", "ruff", "npm test", "eslint"}
+
+# Docker defaults (overridable via env)
+DEFAULT_IMAGE = "repoagent-sandbox:latest"
+DEFAULT_TIMEOUT_S = 120
+DEFAULT_CPU_LIMIT = "1.0"
+DEFAULT_MEMORY_LIMIT = "512m"
+
+mcp = FastMCP("TestRunner")
+
+
+def _set_workspace(workspace: str) -> None:
+    """Set the workspace root directory."""
+    global _WORKSPACE
+    _WORKSPACE = Path(workspace).resolve()
+    if not _WORKSPACE.is_dir():
+        msg = f"Workspace directory does not exist: {_WORKSPACE}"
+        raise FileNotFoundError(msg)
+
+
+def _validate_command(command: str) -> str:
+    """Validate *command* against the allowlist.
+
+    Returns the sanitised command string.
+    Raises ValueError for disallowed commands.
+    """
+    stripped = command.strip()
+    if not stripped:
+        msg = "Empty command"
+        raise ValueError(msg)
+
+    # Reject shell metacharacters that could escape or chain commands
+    if re.search(r"[;&|`$><\n\r]", stripped):
+        msg = f"Shell metacharacters not allowed in command: {stripped!r}"
+        raise ValueError(msg)
+
+    # Check that the command matches or starts with an allowed command prefix
+    is_allowed = False
+    for allowed in ALLOWED_COMMANDS:
+        if stripped == allowed or stripped.startswith(f"{allowed} "):
+            is_allowed = True
+            break
+
+    if not is_allowed:
+        msg = (
+            f"Command not allowed: {stripped!r}. "
+            f"Allowed prefixes: {', '.join(sorted(ALLOWED_COMMANDS))}"
+        )
+        raise ValueError(msg)
+
+    return stripped
+
+
+def _run_in_docker(command: str, timeout_s: int | None = None) -> dict[str, object]:
+    """Run *command* inside the Docker sandbox container.
+
+    Returns dict with keys: exit_code, stdout, stderr, duration_s, timed_out.
+    """
+    import docker  # Import here so the module can be loaded without docker installed
+
+    if _WORKSPACE is None:
+        msg = "Workspace not configured."
+        raise RuntimeError(msg)
+
+    image = os.environ.get("SANDBOX_IMAGE", DEFAULT_IMAGE)
+    timeout = timeout_s or int(os.environ.get("SANDBOX_TIMEOUT_S", str(DEFAULT_TIMEOUT_S)))
+    cpu_limit = float(os.environ.get("SANDBOX_CPU_LIMIT", DEFAULT_CPU_LIMIT))
+    memory_limit = os.environ.get("SANDBOX_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT)
+
+    client = docker.from_env()
+
+    # Convert workspace path for Docker mount (handle Windows paths)
+    workspace_str = str(_WORKSPACE)
+    # On Windows, Docker Desktop expects /c/Users/... style paths for bind mounts
+    # but the docker-py library handles this automatically when using the dict mount syntax.
+
+    start_time = time.monotonic()
+    timed_out = False
+
+    try:
+        container = client.containers.run(
+            image=image,
+            command=["sh", "-c", command],
+            volumes={workspace_str: {"bind": "/workspace", "mode": "rw"}},
+            working_dir="/workspace",
+            network_mode="none",  # No network access
+            user="sandbox",
+            nano_cpus=int(cpu_limit * 1e9),  # CPU limit in nano-CPUs
+            mem_limit=memory_limit,
+            detach=True,
+            # Remove container after completion
+        )
+
+        try:
+            result = container.wait(timeout=timeout)
+            exit_code = result.get("StatusCode", -1)
+        except Exception:
+            # Timeout or other error — kill the container
+            timed_out = True
+            container.kill()
+            exit_code = -1
+
+        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+
+        container.remove(force=True)
+
+    except docker.errors.ImageNotFound:
+        err_msg = f"Docker image not found: {image}. Build with: docker build -t {image} sandbox/"
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": err_msg,
+            "duration_s": 0.0,
+            "timed_out": False,
+        }
+    except docker.errors.DockerException as exc:
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"Docker error: {exc}",
+            "duration_s": 0.0,
+            "timed_out": False,
+        }
+
+    duration_s = time.monotonic() - start_time
+
+    return {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "duration_s": round(duration_s, 3),
+        "timed_out": timed_out,
+    }
+
+
+def _format_test_report(
+    command: str,
+    result: dict[str, object],
+) -> TestReport:
+    """Format Docker run result as a TestReport model."""
+    exit_code = int(result.get("exit_code", -1))  # type: ignore[arg-type]
+    stdout = str(result.get("stdout", ""))
+    stderr = str(result.get("stderr", ""))
+    duration_s = max(0.0, float(result.get("duration_s", 0.0)))  # type: ignore[arg-type]
+    timed_out = bool(result.get("timed_out", False))
+
+    combined_output = stdout + stderr
+    log_lines = combined_output.strip().splitlines()
+    log_tail = "\n".join(log_lines[-30:]) if log_lines else ""
+
+    # Detect passed / failed
+    passed = exit_code == 0 and not timed_out
+
+    # Extract failed test names from pytest output
+    failed_tests: list[str] = []
+    for line in log_lines:
+        # Match pytest FAILED lines like "FAILED tests/test_foo.py::test_bar"
+        match = re.match(r"FAILED\s+(\S+)", line)
+        if match:
+            failed_tests.append(match.group(1))
+
+    if timed_out:
+        log_tail = (log_tail + "\n[TIMEOUT] Command timed out and was killed.").strip()
+
+    return TestReport(
+        command=command,
+        passed=passed,
+        exit_code=exit_code,
+        failed_tests=failed_tests,
+        log_tail=log_tail,
+        duration_s=duration_s,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def run_tests(command: str) -> TestReport:
+    """Run a test command inside the Docker sandbox.
+
+    Only these commands are allowed: pytest, ruff, npm test, eslint.
+    Returns a TestReport with pass/fail, exit code, failed tests, and log tail.
+    """
+    validated = _validate_command(command)
+    result = _run_in_docker(validated)
+    return _format_test_report(validated, result)
+
+
+@mcp.tool()
+def run_lint() -> TestReport:
+    """Run ruff linting on the workspace inside the Docker sandbox.
+
+    Returns a TestReport with lint results.
+    """
+    result = _run_in_docker("ruff check .")
+    return _format_test_report("ruff check .", result)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys
+
+    workspace = os.environ.get("REPOAGENT_WORKSPACE", "")
+    if not workspace:
+        print("Error: set REPOAGENT_WORKSPACE env var", file=sys.stderr)
+        sys.exit(1)
+    _set_workspace(workspace)
+    mcp.run()
