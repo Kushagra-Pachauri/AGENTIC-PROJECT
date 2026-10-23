@@ -14,13 +14,19 @@
    - Supporting directories: `sandbox/`, `demo_repo/`, `eval/`, `scripts/`,
      `docs/`, `tests/`
 
-2. **Project configuration** — Created:
-   - `pyproject.toml` with pinned dependencies (CrewAI 1.15.28, ADK 2.12.0,
-     A2A SDK 1.2.2, MCP 2.3.0, Langfuse 5.0.2, Pydantic 2.11.7, etc.)
-   - `.env.example` with all required environment variable placeholders
-   - `.gitignore` covering `.env`, `runs/`, Python/IDE/OS artifacts
-   - `Makefile` with targets: `install`, `dev`, `test`, `test-demo`, `lint`,
-     `format`, `run`, `clean`
+2. **Project configuration & environment setup**:
+   - Fixed `build-backend` in `pyproject.toml` to `hatchling.build` (resolving `BackendUnavailable: Cannot import 'hatchling.backends'`).
+   - Created dedicated Python 3.11 virtual environment (`.venv` with Python 3.11.15).
+   - Resolved cross-framework dependency compatibility between `crewai==1.15.28` and `google-adk==2.12.0`:
+     - `google-adk==2.12.0` pins `opentelemetry-sdk<=1.42.1`, `fastapi>=0.133,<1`, and `pydantic>=2.12,<3`.
+     - `crewai==1.15.28` pins `mcp>=1.28.1,<1.29`, `python-dotenv>=1.2.2,<2`, and `pydantic<2.13`.
+     - Pinned mutually compatible exact versions in `pyproject.toml`:
+       `crewai==1.15.28`, `google-adk==2.12.0`, `a2a-sdk==1.2.2`, `mcp[cli]==1.28.1`, `langfuse==4.15.6`, `pydantic==2.12.5`, `fastapi==0.141.1`, `uvicorn[standard]==0.54.0`, `streamlit==1.45.1`, `httpx==0.28.1`, `docker==7.2.0`, `pygithub==2.6.1`, `python-dotenv==1.2.4`.
+   - Verified with `pip check`: `No broken requirements found.`
+   - Verified with `pip install -e .`: Completed successfully with code 0.
+   - `.env.example` with all required environment variable placeholders.
+   - `.gitignore` covering `.venv`, `.env`, `runs/`, Python/IDE/OS artifacts.
+   - `Makefile` with targets: `install`, `dev`, `test`, `test-demo`, `lint`, `format`, `run`, `clean`.
 
 3. **Pydantic v2 schemas** (`src/repoagent/schemas.py`) — 12 models:
    - Enums: `RunStatus`, `ReviewVerdict`
@@ -62,11 +68,13 @@ ruff format --check src/ tests/ demo_repo/
 
 ### Test results
 
-| Test suite | Tests | Status |
-|-----------|-------|--------|
-| `tests/test_schemas.py` | 27 | ✅ All passing (0 warnings) |
-| `demo_repo/tests/test_auth.py` | 6 | ✅ All passing |
-| `demo_repo/tests/test_notes.py` | 6 | ✅ All passing |
+| Test suite | Tests / Check | Status |
+|-----------|---------------|--------|
+| `pip check` (.venv) | Dependency tree integrity | ✅ Clean (`No broken requirements found.`) |
+| `pip install -e .` (.venv) | Editable build & install | ✅ Success (code 0) |
+| `tests/test_schemas.py` | 27 unit tests (Python 3.11) | ✅ All passing (0 warnings) |
+| `demo_repo/tests/test_auth.py` | 6 unit tests (Python 3.11) | ✅ All passing |
+| `demo_repo/tests/test_notes.py` | 6 unit tests (Python 3.11) | ✅ All passing |
 | Ruff lint & formatting | 25 files | ✅ Clean (0 issues) |
 
 ### Known issues

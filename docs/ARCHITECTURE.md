@@ -172,17 +172,19 @@ module(s) and mechanisms that will satisfy it.
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| Language | Python | ≥ 3.11 |
+| Language | Python | 3.11.15 (pinned via .venv) |
 | Agentic (orchestration) | CrewAI | 1.15.28 |
 | Agentic (specialized agents) | Google ADK | 2.12.0 |
 | Agent communication | A2A SDK | 1.2.2 |
-| Tool protocol | MCP Python SDK | 2.3.0 |
-| Observability | Langfuse | 5.0.2 |
-| Data models | Pydantic | 2.11.7 |
-| REST API | FastAPI | 0.115.12 |
+| Tool protocol | MCP Python SDK | 1.28.1 |
+| Observability | Langfuse | 4.15.6 |
+| Data models | Pydantic | 2.12.5 |
+| REST API | FastAPI | 0.141.1 |
+| ASGI Server | Uvicorn | 0.54.0 |
 | UI | Streamlit | 1.45.1 |
 | HTTP client | httpx | 0.28.1 |
-| Container mgmt | docker-py | 7.2.1 |
+| Container mgmt | docker-py | 7.2.0 |
 | GitHub API | PyGithub | 2.6.1 |
+| Environment | python-dotenv | 1.2.4 |
 | Linting | ruff | 0.11.13 |
 | Testing | pytest | 8.4.1 |

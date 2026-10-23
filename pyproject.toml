@@ -1,6 +1,6 @@
 [build-system]
 requires = ["hatchling"]
-build-backend = "hatchling.backends"
+build-backend = "hatchling.build"
 
 [project]
 name = "repoagent"
@@ -11,16 +11,16 @@ dependencies = [
     "crewai==1.15.28",
     "google-adk==2.12.0",
     "a2a-sdk==1.2.2",
-    "mcp[cli]==2.3.0",
-    "langfuse==5.0.2",
-    "pydantic==2.11.7",
-    "fastapi==0.115.12",
-    "uvicorn[standard]==0.34.3",
+    "mcp[cli]==1.28.1",
+    "langfuse==4.15.6",
+    "pydantic==2.12.5",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.54.0",
     "streamlit==1.45.1",
     "httpx==0.28.1",
-    "docker==7.2.1",
+    "docker==7.2.0",
     "pygithub==2.6.1",
-    "python-dotenv==1.1.0",
+    "python-dotenv==1.2.4",
 ]
 
 [project.optional-dependencies]
