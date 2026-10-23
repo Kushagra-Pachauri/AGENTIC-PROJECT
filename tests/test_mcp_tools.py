@@ -79,6 +79,20 @@ class TestRepoReader:
         results = repo_reader.search_code("nonexistent_symbol_xyz123")
         assert results == "No matches found."
 
+    def test_write_file_direct(self, tmp_path: Path) -> None:
+        original = repo_reader._WORKSPACE
+        try:
+            repo_reader._set_workspace(str(tmp_path))
+            res = repo_reader.write_file("nested/test.txt", "hello world")
+            assert "Successfully wrote" in res
+            assert (tmp_path / "nested" / "test.txt").read_text(encoding="utf-8") == "hello world"
+        finally:
+            repo_reader._WORKSPACE = original
+
+    def test_write_file_path_traversal_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Path traversal detected"):
+            repo_reader.write_file("../escape.txt", "data")
+
     def test_path_traversal_relative_rejected(self) -> None:
         """Reject relative path traversal attempts like ../../"""
         with pytest.raises(ValueError, match="Path traversal detected"):
@@ -291,6 +305,7 @@ class TestMCPClient:
         assert "list_tree" in tool_names
         assert "read_file" in tool_names
         assert "search_code" in tool_names
+        assert "write_file" in tool_names
 
     def test_get_adk_toolset(self) -> None:
         try:

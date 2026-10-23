@@ -195,6 +195,19 @@ def search_code(pattern: str, path: str = ".", max_results: int = 50) -> str:
     return "\n".join(results) if results else "No matches found."
 
 
+@mcp.tool()
+def write_file(path: str, content: str) -> str:
+    """Write text *content* to a file at *path* (relative to workspace).
+
+    Creates parent directories if necessary.
+    Rejects path traversal and absolute paths outside the workspace.
+    """
+    resolved = _resolve_safe(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding="utf-8")
+    return f"Successfully wrote {len(content)} characters to {path}"
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
