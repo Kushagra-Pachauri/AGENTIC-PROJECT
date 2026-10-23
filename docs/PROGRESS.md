@@ -64,7 +64,7 @@ ruff format --check src/ tests/ demo_repo/
 
 | Test suite | Tests | Status |
 |-----------|-------|--------|
-| `tests/test_schemas.py` | 26 | ✅ All passing (0 warnings) |
+| `tests/test_schemas.py` | 27 | ✅ All passing (0 warnings) |
 | `demo_repo/tests/test_auth.py` | 6 | ✅ All passing |
 | `demo_repo/tests/test_notes.py` | 6 | ✅ All passing |
 | Ruff lint & formatting | 25 files | ✅ Clean (0 issues) |
