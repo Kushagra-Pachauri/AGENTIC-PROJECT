@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.backends"
+
+[project]
+name = "repoagent"
+version = "0.1.0"
+description = "Agentic AI system that produces tested, reviewed GitHub PRs from natural-language requirements"
+requires-python = ">=3.11"
+dependencies = [
+    "crewai==1.15.28",
+    "google-adk==2.12.0",
+    "a2a-sdk==1.2.2",
+    "mcp[cli]==2.3.0",
+    "langfuse==5.0.2",
+    "pydantic==2.11.7",
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.3",
+    "streamlit==1.45.1",
+    "httpx==0.28.1",
+    "docker==7.2.1",
+    "pygithub==2.6.1",
+    "python-dotenv==1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.1",
+    "pytest-asyncio==1.0.0",
+    "pytest-cov==6.2.1",
+    "ruff==0.11.13",
+    "mypy==1.16.1",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
