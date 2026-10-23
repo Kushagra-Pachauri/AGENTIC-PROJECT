@@ -61,6 +61,40 @@ class TestRunState:
         state.status = RunStatus.NEEDS_HUMAN
         assert state.status == RunStatus.NEEDS_HUMAN
 
+    def test_field_assignment_and_list_updates(self) -> None:
+        """Verify field assignment, validation on assignment, and list updates."""
+        state = RunState()
+
+        # Field assignments
+        state.requirement = "Implement password reset"
+        assert state.requirement == "Implement password reset"
+
+        state.branch = "repoagent/test-branch"
+        assert state.branch == "repoagent/test-branch"
+
+        state.retry_count = 2
+        assert state.retry_count == 2
+
+        # Validate assignment checks constraints
+        with pytest.raises(ValidationError):
+            state.retry_count = -1
+
+        # Plan assignment
+        state.plan = Plan(summary="Plan summary", steps=["step 1"])
+        assert state.plan.summary == "Plan summary"
+
+        # List updates: test_reports
+        report = TestReport(command="pytest", passed=True, exit_code=0, duration_s=1.5)
+        state.test_reports.append(report)
+        assert len(state.test_reports) == 1
+        assert state.test_reports[0].command == "pytest"
+
+        # List updates: errors
+        state.errors.append("First warning")
+        state.errors.append("Second error")
+        assert len(state.errors) == 2
+        assert state.errors == ["First warning", "Second error"]
+
     def test_retry_count_validation(self) -> None:
         with pytest.raises(ValidationError):
             RunState(retry_count=-1)
