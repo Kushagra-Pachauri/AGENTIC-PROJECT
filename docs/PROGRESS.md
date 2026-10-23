@@ -83,4 +83,79 @@ ruff format --check src/ tests/ demo_repo/
 
 ---
 
-*Next step: TBD (awaiting instructions)*
+## Step 2: Orchestration Skeleton with Shared State and Provider Adapter ✅
+
+**Date:** 2026-10-24
+**Status:** Complete
+
+### What was done
+
+1. **LLM Provider Adapter (`src/repoagent/providers/`)**:
+   - `LLMProvider` abstract base interface defining `get_crewai_llm()` and `get_adk_model()`.
+   - `GeminiProvider`: hosted provider adapter for Google Gemini (`gemini-2.0-flash`), producing `crewai.LLM` and Google ADK model identifier.
+   - `OpenAICompatibleProvider`: local/self-hosted provider adapter for coding models (e.g., `qwen2.5-coder`, `deepseek-coder` via Ollama/vLLM) with configurable `base_url` and `api_key`.
+   - `get_provider()` factory selecting provider via the `REPOAGENT_PROVIDER` environment variable (default: `gemini`).
+   - Smoke test script at `scripts/smoke_test_provider.py`.
+
+2. **CrewAI Flow Orchestrator (`src/repoagent/flow.py`)**:
+   - Implemented `RepoAgentFlow(Flow[RunState])` managing the pipeline:
+     `analyze` -> `plan` -> `code` -> `test` -> [router: `review` -> `open_pr` | `retry` -> `code` | `needs_human`].
+   - Configured routing after `test`:
+     - Test passes -> proceeds to `review` and then `open_pr` (setting status to `done`).
+     - Test fails with remaining budget -> increments `retry_count` and loops back to `code`.
+     - Test fails with budget exhausted (`retry_count >= max_retries`) -> terminates with status `needs_human` and records error explanation.
+   - Preserves security invariants: strictly operates on branches named `repoagent/<run_id>`, never touches main.
+
+3. **CLI Entry Point (`src/repoagent/run.py`)**:
+   - Implemented `python -m repoagent.run --repo <path> --requirement '<text>'`.
+   - Added optional flags: `--provider`, `--max-retries`, `--simulate-failures`.
+   - Prints the final `RunState` as formatted JSON to stdout.
+
+4. **Automated Tests**:
+   - `tests/test_flow.py`:
+     - `test_flow_completes_end_to_end`: verifies full happy path execution.
+     - `test_retry_cap_path_ends_with_needs_human`: verifies capped retry loop and `needs_human` termination.
+     - `test_state_sharing_between_steps`: verifies data passed across all stages via shared `RunState`.
+     - `test_branch_naming_invariant`: verifies branch naming constraint `repoagent/<run_id>`.
+     - `test_cli_execution`: verifies CLI main function invocation and JSON output.
+   - `tests/test_providers.py`:
+     - Tests defaults, custom configurations, and factory selection for both providers.
+
+### How to run
+
+```bash
+# Run provider smoke test
+python scripts/smoke_test_provider.py
+
+# Run the CLI on demo_repo
+python -m repoagent.run --repo demo_repo --requirement "Add password-reset functionality"
+
+# Run all test suites (39 tests)
+pytest tests/ -v
+
+# Run demo_repo tests (12 tests)
+pytest demo_repo/tests/ -v
+
+# Lint and format checks
+ruff check src/ tests/ scripts/ demo_repo/
+ruff format --check src/ tests/ scripts/ demo_repo/
+```
+
+### Test results
+
+| Test suite | Tests / Check | Status |
+|-----------|---------------|--------|
+| `tests/test_flow.py` | 5 unit tests | ✅ All passing |
+| `tests/test_providers.py` | 7 unit tests | ✅ All passing |
+| `tests/test_schemas.py` | 27 unit tests | ✅ All passing |
+| `demo_repo/tests/` | 12 unit tests | ✅ All passing |
+| Total Tests | 51 tests across repo | ✅ 51 passed |
+| Ruff lint & formatting | 33 files | ✅ Clean (0 issues) |
+
+### Known issues
+
+- None.
+
+---
+
+*Next step: Step 3 (awaiting instructions)*
