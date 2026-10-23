@@ -4,8 +4,8 @@ Workflow:
   1. Clones / copies demo_repo into an isolated workspace directory.
   2. Uses repo_reader MCP server to list the tree and read files.
   3. Uses test_runner MCP server to run tests inside the Docker sandbox.
-  4. Creates a test branch in [GITHUB_REPO] (using GITHUB_TOKEN if available,
-     or simulates the branch ref creation).
+  4. Creates a test branch in [GITHUB_REPO] using the GitHub MCP server and
+     verifies the remote branch exists.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ load_dotenv()
 
 from repoagent.mcp_client import (  # noqa: E402
     call_tool_direct,
+    get_github_params,
     get_repo_reader_params,
     get_test_runner_params,
 )
@@ -59,7 +60,6 @@ async def run_sandbox_tests(workspace: Path) -> TestReport:
     try:
         report = TestReport.model_validate_json(raw_result)
     except Exception:
-        # If returned as string or already parsed
         print(f"Raw test result: {raw_result}")
         raise
 
@@ -72,31 +72,67 @@ async def run_sandbox_tests(workspace: Path) -> TestReport:
     return report
 
 
-def create_github_test_branch(repo_name: str, branch_name: str, token: str | None = None) -> str:
-    """Create a test branch on GitHub repository using PyGithub or simulate if offline."""
-    print(f"[4/4] Creating test branch '{branch_name}' on repository '{repo_name}'...")
+def resolve_repo_full_name(repo_arg: str | None = None) -> tuple[str, str]:
+    """Resolve GitHub owner and repository name from args or environment."""
+    owner = os.environ.get("GITHUB_OWNER", "").strip()
+    repo = (repo_arg or os.environ.get("GITHUB_REPO", "")).strip()
 
+    if "/" in repo:
+        parts = repo.split("/", 1)
+        return parts[0].strip(), parts[1].strip()
+
+    if not owner or not repo:
+        msg = (
+            f"Unable to resolve full GitHub repository: owner='{owner}', repo='{repo}'. "
+            "Please configure GITHUB_OWNER and GITHUB_REPO in .env or pass "
+            "--github-repo 'owner/repo'."
+        )
+        raise ValueError(msg)
+
+    return owner, repo
+
+
+async def create_github_test_branch(owner: str, repo: str, branch_name: str) -> str:
+    """Create and verify a test branch on GitHub using the GitHub MCP server."""
+    print(
+        f"[4/4] Creating test branch '{branch_name}' on repository "
+        f"'{owner}/{repo}' via GitHub MCP server..."
+    )
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
     if not token or token.strip() in {"", "your_github_token_here", "dummy"}:
-        print("      [NOTICE] Live GITHUB_TOKEN not configured in environment.")
-        print(f"      [SIMULATED] Branch reference created: refs/heads/{branch_name}")
-        return f"https://github.com/{repo_name}/tree/{branch_name} (simulated)"
+        print("      [NOTICE] GITHUB_TOKEN not configured in environment.")
+        return f"https://github.com/{owner}/{repo}/tree/{branch_name} (simulated)"
 
     from github import Auth, Github
 
+    # Call create_branch tool via GitHub MCP server (Task 1 requirement)
+    params = get_github_params()
+    result_raw = await call_tool_direct(
+        params,
+        "create_branch",
+        {
+            "owner": owner,
+            "repo": repo,
+            "branch": branch_name,
+        },
+    )
+
+    # Verify that GitHub returned a ref creation or error
+    if "ref" not in result_raw and "refs/heads" not in result_raw:
+        msg = f"GitHub MCP create_branch tool returned unexpected response: {result_raw}"
+        raise RuntimeError(msg)
+
+    # Verify directly via GitHub API that the branch exists on remote
     gh = Github(auth=Auth.Token(token))
-    try:
-        repo = gh.get_repo(repo_name)
-        default_branch = repo.get_branch(repo.default_branch)
-        sha = default_branch.commit.sha
-        ref = repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=sha)
-        branch_url = f"https://github.com/{repo_name}/tree/{branch_name}"
-        print(f"      [SUCCESS] Created remote branch ref: {ref.ref}")
-        print(f"      Branch URL: {branch_url}")
-        return branch_url
-    except Exception as exc:
-        print(f"      [ERROR] Failed to create branch on GitHub: {exc}")
-        print(f"      [FALLBACK] Branch would be: refs/heads/{branch_name}")
-        return f"refs/heads/{branch_name} (failed: {exc})"
+    gh_repo = gh.get_repo(f"{owner}/{repo}")
+    remote_branch = gh_repo.get_branch(branch_name)
+
+    branch_url = f"https://github.com/{owner}/{repo}/tree/{branch_name}"
+    print(f"      [VERIFIED] Remote branch exists: {remote_branch.name}")
+    print(f"      Commit SHA:    {remote_branch.commit.sha}")
+    print(f"      Branch URL:    {branch_url}")
+    return branch_url
 
 
 async def async_main() -> int:
@@ -116,16 +152,18 @@ async def async_main() -> int:
     parser.add_argument(
         "--github-repo",
         type=str,
-        default=os.environ.get("GITHUB_REPO", "example/demo-repo"),
-        help="GitHub repository in 'owner/repo' format",
+        default=None,
+        help="GitHub repository in 'owner/repo' or 'repo' format",
     )
     args = parser.parse_args()
 
     run_id = uuid.uuid4().hex[:8]
     workspace = args.workspace_dir or Path(f"runs/demo_workspace_{run_id}").resolve()
     source_repo = args.source_repo.resolve()
+    owner, repo_name = resolve_repo_full_name(args.github_repo)
 
     print(f"=== RepoAgent MCP Tool Layer Acceptance Demo (Run {run_id}) ===")
+    print(f"Target GitHub Repository: {owner}/{repo_name}")
 
     # Step 1: Clone demo repo into workspace
     clone_demo_to_workspace(source_repo, workspace)
@@ -140,13 +178,14 @@ async def async_main() -> int:
             print("[ERROR] Tests failed in sandbox container!")
             return 1
 
-        # Step 4: Create test branch in GitHub repository
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
+        # Step 4: Create test branch in GitHub repository using GitHub MCP server
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         branch_name = f"repoagent/{run_id}-{timestamp}"
-        create_github_test_branch(args.github_repo, branch_name, token=token)
+        branch_url = await create_github_test_branch(owner, repo_name, branch_name)
 
         print("\n=== All Step 3 acceptance criteria satisfied successfully! ===")
+        print(f"Active remote branch: {branch_name}")
+        print(f"Remote URL: {branch_url}")
         return 0
 
     finally:
