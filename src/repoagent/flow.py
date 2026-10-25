@@ -39,7 +39,7 @@ from repoagent.schemas import (
     RunStatus,
     TestReport,
 )
-from repoagent.workspace_utils import validate_plan_paths
+from repoagent.workspace_utils import get_runs_dir, validate_plan_paths
 
 
 class RepoAgentFlow(Flow[RunState]):
@@ -58,6 +58,7 @@ class RepoAgentFlow(Flow[RunState]):
         workspace: Path | str | None = None,
         llm: Any | None = None,
         use_live_agents: bool = False,
+        create_pr: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(initial_state=initial_state, **kwargs)
@@ -75,6 +76,7 @@ class RepoAgentFlow(Flow[RunState]):
         self.workspace = Path(workspace).resolve() if workspace else None
         self._llm = llm
         self.use_live_agents = use_live_agents
+        self.create_pr = create_pr
         self._wall_start_time = time.monotonic()
 
     def _save_checkpoint(self) -> None:
@@ -738,47 +740,13 @@ class RepoAgentFlow(Flow[RunState]):
 
     @listen("approved")
     def open_pr(self) -> str:
-        """Step 6: Open GitHub Pull Request for human review (stub per Step 5 constraints)."""
-        req = self.state.requirement or "Feature update"
-        plan_summary = self.state.plan.summary if self.state.plan else "N/A"
-        review_summary = self.state.review.summary if self.state.review else "N/A"
-
-        body = (
-            f"## Summary\n\n"
-            f"Automated PR produced by RepoAgent for requirement:\n> {req}\n\n"
-            f"### Plan\n{plan_summary}\n\n"
-            f"### Review Verdict\n{review_summary}\n\n"
-            f"### Retries\n{self.state.retry_count} / {self.state.max_retries}\n"
+        """Step 6: Open GitHub Pull Request for human review if done gate passes."""
+        workspace = self._get_workspace_path()
+        run_dir = (
+            Path(self.workspace).parent if self.workspace else get_runs_dir() / self.state.run_id
         )
 
-        title = f"feat: {req}"
-        workspace = self._get_workspace_path()
-
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
-        live_pr_enabled = os.environ.get("REPOAGENT_LIVE_PR", "").lower() in ("true", "1")
-        if token and live_pr_enabled:
-            from repoagent.github_service import push_branch_and_create_pr
-
-            self.state.pr = push_branch_and_create_pr(
-                workspace=workspace,
-                branch=self.state.branch,
-                title=title,
-                body=body,
-            )
-        else:
-            self.state.pr = PRSummary(
-                title=title,
-                body_markdown=body,
-                url=f"https://github.com/offline-test/repo/pull/{self.state.run_id[:6]}",
-                branch=self.state.branch,
-            )
-
-        # Requirement 6: Set DONE only if:
-        # 1. last report passed deterministically with workspace_hash
-        # 2. workspace actually has applied modifications
-        # 3. workspace is not baseline demo_repo
-        # 4. reviewer approved
-        # 5. no errors
+        # 1. Evaluate DONE Gate conditions
         last_report = self.state.test_reports[-1] if self.state.test_reports else None
         is_mock_test = self.coding_fn is not None and self.testing_fn is not None
         has_mods = workspace_has_modifications(workspace) or is_mock_test
@@ -787,20 +755,62 @@ class RepoAgentFlow(Flow[RunState]):
             self.state.review and self.state.review.verdict == ReviewVerdict.APPROVE
         )
 
-        if (
+        gate_passed = bool(
             last_report
             and last_report.passed
             and bool(last_report.workspace_hash)
             and has_mods
             and not_baseline
             and reviewer_approved
-        ):
-            self.state.status = RunStatus.DONE
-        else:
+        )
+
+        if not gate_passed:
             self.state.status = RunStatus.NEEDS_HUMAN
+            self.state.finished_at = datetime.now(UTC)
+            if "Done gate conditions not satisfied" not in self.state.errors:
+                self.state.errors.append("Done gate conditions not satisfied")
+            self._save_checkpoint()
+            from repoagent.pr_agent import write_run_reports
+
+            write_run_reports(run_dir, self.state)
+            return "open_pr_completed"
+
+        # 2. Check if live PR creation is requested
+        live_pr_enabled = self.create_pr or os.environ.get("REPOAGENT_LIVE_PR", "").lower() in (
+            "true",
+            "1",
+        )
+
+        if live_pr_enabled:
+            from repoagent.pr_agent import open_and_verify_pull_request
+
+            try:
+                pr_summary = open_and_verify_pull_request(
+                    state=self.state,
+                    workspace=workspace,
+                )
+                self.state.pr = pr_summary
+                self.state.status = RunStatus.DONE
+            except Exception as exc:
+                self.state.status = RunStatus.NEEDS_HUMAN
+                self.state.errors.append(f"PR creation or verification failed: {exc}")
+        else:
+            from repoagent.pr_agent import build_deterministic_pr_content
+
+            title, body = build_deterministic_pr_content(self.state)
+            self.state.pr = PRSummary(
+                title=title,
+                body_markdown=body,
+                url=f"https://github.com/offline-test/repo/pull/{self.state.run_id[:6]}",
+                branch=self.state.branch,
+            )
+            self.state.status = RunStatus.DONE
 
         self.state.finished_at = datetime.now(UTC)
         self._save_checkpoint()
+        from repoagent.pr_agent import write_run_reports
+
+        write_run_reports(run_dir, self.state)
         return "open_pr_completed"
 
     @listen("needs_human")
@@ -815,4 +825,10 @@ class RepoAgentFlow(Flow[RunState]):
         if msg not in self.state.errors:
             self.state.errors.append(msg)
         self._save_checkpoint()
+        run_dir = (
+            Path(self.workspace).parent if self.workspace else get_runs_dir() / self.state.run_id
+        )
+        from repoagent.pr_agent import write_run_reports
+
+        write_run_reports(run_dir, self.state)
         return "needs_human_completed"

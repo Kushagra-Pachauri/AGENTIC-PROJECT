@@ -328,6 +328,7 @@ def run_coding_loop(
     live_llm: bool = True,
     max_retries: int = 3,
     replay: bool = False,
+    create_pr: bool = False,
 ) -> int:
     raw_id = uuid.uuid4().hex[:8]
     run_id = f"replay_{raw_id}" if replay else raw_id
@@ -387,6 +388,7 @@ def run_coding_loop(
                 initial_state=initial_state,
                 workspace=workspace,
                 use_live_agents=True,
+                create_pr=create_pr,
             )
         elif live_llm:
             print("[*] Running with Live LLM and Live MCP Agents...")
@@ -394,6 +396,7 @@ def run_coding_loop(
                 initial_state=initial_state,
                 workspace=workspace,
                 use_live_agents=True,
+                create_pr=create_pr,
             )
         else:
             print("[SIMULATION] Running with Automated Correction Loop Simulation...")
@@ -522,6 +525,12 @@ def main() -> None:
         default=False,
         help="Run in replay mode: apply known-good ChangeSet, then run test runner and Reviewer",
     )
+    parser.add_argument(
+        "--create-pr",
+        action="store_true",
+        default=False,
+        help="Open a real GitHub Pull Request if verification succeeds",
+    )
     args = parser.parse_args()
 
     sys.exit(
@@ -531,6 +540,7 @@ def main() -> None:
             live_llm=args.live_llm,
             max_retries=args.max_retries,
             replay=args.replay,
+            create_pr=args.create_pr,
         )
     )
 

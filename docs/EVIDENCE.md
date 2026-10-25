@@ -63,3 +63,39 @@ This document preserves the durable audit record of the three primary Step 5 run
     - Reviewer called over A2A only after deterministic tests passed (`11:48:23Z`).
   - **Reviewer Verdict**: `approve` with 0 findings.
   - **PR Summary**: Produced valid PR summary for branch `repoagent/replay_4c73dac5`.
+
+---
+
+## Run 4: Verified Step 6 Live PR Creation via Replay (`replay_f70d568d`)
+
+- **Run ID**: `replay_f70d568d`
+- **Flow ID**: `93a54157-67bd-4f98-af94-a495663d0fff`
+- **Date**: 2026-10-25T13:11:08Z
+- **Replay Mode**: `true`
+- **Replay Label**: `hand-written reference solution, not model output`
+- **Reference Fixture**: `tests/fixtures/replay_password_reset.json`
+- **Final Status**: `done` (Exit Code: 0)
+- **Retries Used**: 0 / 3
+- **Reviewer Invoked**: Yes (`approve`, 0 findings)
+- **Pull Request Created**:
+  - **PR URL**: [`https://github.com/Kushagra-Pachauri/demo_repo/pull/1`](https://github.com/Kushagra-Pachauri/demo_repo/pull/1)
+  - **PR Number**: `#1`
+  - **Branch**: `repoagent/replay_f70d568d`
+  - **Base**: `main`
+  - **State**: `open`
+  - **Target Repository**: `Kushagra-Pachauri/demo_repo`
+  - **PR Title**: `[REPLAY] feat: Add a password-reset functionality`
+  - **Files Changed in PR**:
+    - `demo_repo/src/notes_app/app.py`
+    - `demo_repo/src/notes_app/auth.py`
+    - `demo_repo/tests/test_auth.py`
+- **Audit Findings**:
+  - **Deterministic Test Verification**: Executed `pytest` inside the Docker sandbox container. Collected and passed **15 items** (12 baseline + 3 new test functions) in 0.21s.
+  - **Workspace Hash Integrity**: Tested workspace hash (`26eb01594b153a3e7e70bb817be459f6f0afa50280fae6ae1dbd3b254a09c91d`) matched verified reference solution.
+  - **A2A Agents**: Planner called over A2A prior to coding (`13:11:10Z`); Reviewer called over A2A only after deterministic tests passed (`13:13:03Z`). Verdict: `approve`.
+  - **Baseline Preflight Verification**: Checked remote `main` branch files against workspace baseline using GitHub MCP `get_file_contents` with UTF-8 decoding and line-ending normalization prior to creating branches or pushing commits.
+  - **Push Scoping**: Pushed exclusively the 3 password-reset implementation and test files. Zero RepoAgent source files, configuration files, `.env`, `runs/`, or compiled artifacts were pushed.
+  - **Deterministic PR Content**: Constructed title with `[REPLAY]` prefix and body with reference notice (`Hand-written reference solution, not model output.`), requirement, plan summary, file list, test table, reviewer findings, run ID, and `'Created by RepoAgent. A human must review before merging.'`.
+  - **Read-Back Verification**: Verified PR state is `open`, base is `main`, head branch is `repoagent/replay_f70d568d`, and changed files list matches disk diff.
+  - **Run Reports**: Durable reports generated on disk at `runs/replay_f70d568d/report.json` and `runs/replay_f70d568d/report.md`.
+

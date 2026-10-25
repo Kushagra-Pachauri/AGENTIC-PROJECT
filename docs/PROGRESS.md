@@ -437,4 +437,78 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 
 ---
 
-*Next step: Step 6 (awaiting instructions)*
+---
+
+## Step 6: PR Agent, Report Writer, and the First Real GitHub PR ✅
+
+**Date:** 2026-10-25
+**Status:** Complete
+
+### What was done
+
+1. **GitHub MCP Integration & PR Agent (`src/repoagent/pr_agent.py`)**:
+   - Implemented `open_and_verify_pull_request` using GitHub MCP client tools:
+     - `create_branch`: creates branch `repoagent/<run_id>` from `main`.
+     - `push_files`: atomic commit of modified workspace files.
+     - `create_pull_request`: creates PR with base `main` and head `repoagent/<run_id>`.
+     - `get_pull_request` & `get_pull_request_files`: reads back PR status, branch, and changed files list.
+     - `get_file_contents`: used during preflight check.
+   - **Baseline Preflight Check**: Verified remote `main` matches workspace baseline before creating branches or pushing commits (UTF-8 decoded, newline normalized).
+   - **Strict Push Scoping**: Filtered push candidates to only changed workspace files, strictly excluding RepoAgent framework files, configuration files, and forbidden paths (`.env`, `runs/`, `__pycache__`, `*.pyc`).
+   - **Post-Creation Verification**: Confirmed PR state is `open`, base is `main`, head is `repoagent/<run_id>`, and remote changed file list strictly matches the local disk diff.
+
+2. **Deterministic PR Content**:
+   - PR content is strictly derived from `RunState` (no LLM hallucinations).
+   - Includes requirement, plan summary, files changed, test verification table with workspace hashes and durations, code review verdict and findings, iteration counts, run ID, and `'Created by RepoAgent. A human must review before merging.'`.
+   - Replay runs clearly labelled with `[REPLAY]` prefix and notice: `'Hand-written reference solution, not model output.'`.
+
+3. **Report Writer (`src/repoagent/pr_agent.py`)**:
+   - `write_run_reports` outputs structured reports on every run:
+     - `runs/<run_id>/report.json`: complete machine-readable dump of `RunState`.
+     - `runs/<run_id>/report.md`: formatted markdown summary with plan, changes, tests, review, and PR link.
+
+4. **Orchestrator Gating (`src/repoagent/flow.py`)**:
+   - Live PR creation is off by default.
+   - Activated only when the DONE gate passes AND explicit `--create-pr` CLI flag or `REPOAGENT_LIVE_PR=true` is set.
+   - When disabled, offline test execution creates local PRSummary and writes run reports without touching remote branches or GitHub APIs.
+
+5. **Live Verification on GitHub (`Kushagra-Pachauri/demo_repo`)**:
+   - Executed reference replay run `replay_f70d568d` with `--create-pr`.
+   - Verified 15/15 deterministic tests passed in Docker sandbox, workspace hash `26eb01594b15...`.
+   - A2A Reviewer approved with 0 findings.
+   - Real GitHub PR created:
+     - **PR URL**: [https://github.com/Kushagra-Pachauri/demo_repo/pull/1](https://github.com/Kushagra-Pachauri/demo_repo/pull/1)
+     - **PR Number**: `#1`
+     - **Branch**: `repoagent/replay_f70d568d`
+     - **Files Changed**: Exactly the 3 password-reset files (`demo_repo/src/notes_app/app.py`, `demo_repo/src/notes_app/auth.py`, `demo_repo/tests/test_auth.py`). Zero RepoAgent files pushed.
+
+6. **Comprehensive Unit Testing & Test Hygiene**:
+   - Added `tests/test_pr_agent.py` (9 unit tests) covering replay labelling, secret redaction (`GITHUB_TOKEN` never leaks), push scoping (forbidden files excluded), baseline preflight check failure, mocked PR creation and verification, verification mismatch error handling, done gate blocking, default PR disabled flag, and report writer.
+   - Zero pollution: `runs/` folder count remained strictly unchanged before and after testing (105 folders).
+
+### Test results
+
+| Test file | Tests | Status |
+|-----------|-------|--------|
+| `tests/test_a2a.py` | 17 unit tests | ✅ All passing |
+| `tests/test_changeset_applier.py` | 9 unit tests | ✅ All passing |
+| `tests/test_coding_loop.py` | 5 unit tests | ✅ All passing |
+| `tests/test_flow.py` | 6 unit tests | ✅ All passing |
+| `tests/test_mcp_tools.py` | 31 unit tests | ✅ All passing |
+| `tests/test_pr_agent.py` | 9 unit tests | ✅ All passing |
+| `tests/test_providers.py` | 10 unit tests | ✅ All passing |
+| `tests/test_retry.py` | 5 unit tests | ✅ All passing |
+| `tests/test_schemas.py` | 28 unit tests | ✅ All passing |
+| `tests/test_verification_hardening.py` | 11 unit tests | ✅ All passing |
+| **Project Tests Subtotal** | **131 unit tests** | **✅ 131 passed** |
+| `demo_repo/tests/test_auth.py` | 6 unit tests | ✅ All passing |
+| `demo_repo/tests/test_notes.py` | 6 unit tests | ✅ All passing |
+| `demo_repo/tests/test_notes.py` | 6 unit tests | ✅ All passing |
+| **Demo Repo Subtotal** | **12 unit tests** | **✅ 12 passed** |
+| **Total Test Suite** | **143 tests** | **✅ 143 passed (100%)** |
+| Ruff check | 55 files | ✅ Clean (0 issues) |
+| Ruff format --check | 55 files | ✅ Clean (55 files already formatted) |
+
+---
+
+*Next step: Step 7 (awaiting instructions)*

@@ -135,6 +135,7 @@ class PRSummary(BaseModel):
     body_markdown: str = Field(default="")
     url: str = Field(default="")
     branch: str
+    pull_number: int | None = Field(default=None, description="GitHub Pull Request number")
 
 
 class RunState(BaseModel):

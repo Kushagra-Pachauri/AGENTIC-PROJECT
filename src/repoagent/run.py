@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Run in replay mode: apply reference ChangeSet, test runner and Reviewer",
     )
+    parser.add_argument(
+        "--create-pr",
+        action="store_true",
+        default=False,
+        help="Open a real GitHub Pull Request if verification succeeds",
+    )
     return parser
 
 
@@ -118,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         initial_state=initial_state,
         simulate_test_failures=args.simulate_failures,
         use_live_agents=args.use_live_agents,
+        create_pr=args.create_pr,
         workspace=isolated_workspace,
     )
     _ = flow.kickoff()
