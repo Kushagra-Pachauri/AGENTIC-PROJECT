@@ -30,3 +30,7 @@ class LLMProvider(ABC):
     def get_adk_model(self) -> str | Any:
         """Build and return the model identifier/object expected by Google ADK."""
         ...
+
+    def get_adk_llm(self) -> Any:
+        """Build and return the model instance (or identifier) for Google ADK Agent."""
+        return self.get_adk_model()

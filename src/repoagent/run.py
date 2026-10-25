@@ -10,10 +10,12 @@ import argparse
 import contextlib
 import os
 import sys
+from pathlib import Path
 
 from repoagent.flow import RepoAgentFlow
 from repoagent.providers import get_provider
-from repoagent.schemas import RunState
+from repoagent.schemas import RunState, RunStatus
+from repoagent.workspace_utils import setup_workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +54,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Simulate test failures for N iterations (for testing retry cap)",
     )
+    parser.add_argument(
+        "--live",
+        dest="use_live_agents",
+        action="store_true",
+        default=True,
+        help="Use live agents with LLM (default: True)",
+    )
+    parser.add_argument(
+        "--stub",
+        dest="use_live_agents",
+        action="store_false",
+        help="Use deterministic stubs instead of live agents",
+    )
     return parser
 
 
@@ -79,16 +94,26 @@ def main(argv: list[str] | None = None) -> int:
         max_retries=args.max_retries,
     )
 
-    # Execute orchestrator flow
+    # Always isolate target repository into a fresh workspace under runs/<run_id>/workspace
+    run_dir = Path("runs") / initial_state.run_id
+    isolated_workspace = run_dir / "workspace"
+    source_repo = Path(args.repo).resolve()
+    setup_workspace(source_repo, isolated_workspace)
+
+    initial_state.repo_url = str(isolated_workspace)
+
+    # Execute orchestrator flow on the isolated workspace
     flow = RepoAgentFlow(
         initial_state=initial_state,
         simulate_test_failures=args.simulate_failures,
+        use_live_agents=args.use_live_agents,
+        workspace=isolated_workspace,
     )
     _ = flow.kickoff()
 
     # Print final RunState as formatted JSON
     print(flow.state.model_dump_json(indent=2))
-    return 0
+    return 0 if flow.state.status == RunStatus.DONE else 1
 
 
 if __name__ == "__main__":

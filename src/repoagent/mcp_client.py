@@ -28,7 +28,10 @@ if TYPE_CHECKING:
 
 
 def _python_exe() -> str:
-    """Return the path to the current Python interpreter."""
+    """Return the path to the current or workspace virtualenv Python interpreter."""
+    venv_py = Path(".venv/Scripts/python.exe").resolve()
+    if venv_py.is_file():
+        return str(venv_py)
     return sys.executable
 
 

@@ -67,7 +67,7 @@ class TestRepoAgentFlow:
             assert report.passed is False
 
         assert len(flow.state.errors) > 0
-        assert "Execution capped" in flow.state.errors[0]
+        assert any("Execution capped" in err for err in flow.state.errors)
 
     def test_state_sharing_between_steps(self) -> None:
         """Verify state written by one step is accessible and used by subsequent steps."""
@@ -116,7 +116,7 @@ class TestRepoAgentFlow:
     def test_cli_execution(self) -> None:
         """Verify CLI entry point runs the flow and outputs valid JSON."""
         stdout_capture = StringIO()
-        test_args = ["--repo", "demo_repo", "--requirement", "Add password reset"]
+        test_args = ["--repo", "demo_repo", "--requirement", "Add password reset", "--stub"]
 
         with patch("sys.stdout", stdout_capture):
             exit_code = main(test_args)

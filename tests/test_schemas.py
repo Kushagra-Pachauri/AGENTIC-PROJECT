@@ -215,6 +215,23 @@ class TestChangeSet:
         with pytest.raises(ValidationError):
             fc.path = "other.py"  # type: ignore[misc]
 
+    def test_file_change_coercion(self) -> None:
+        # Dictionary coercion for diff
+        fc = FileChange(
+            path="a.py",
+            action="modify",
+            diff={"diff": "+ def foo(): pass"},  # type: ignore[arg-type]
+        )
+        assert fc.diff == "+ def foo(): pass"
+
+        # List coercion for diff
+        fc2 = FileChange(
+            path="b.py",
+            action="modify",
+            diff=["+ line 1", "+ line 2"],  # type: ignore[arg-type]
+        )
+        assert fc2.diff == "+ line 1\n+ line 2"
+
 
 class TestTestReport:
     def test_passing(self) -> None:

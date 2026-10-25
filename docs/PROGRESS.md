@@ -339,3 +339,100 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 ---
 
 *Next step: Step 5 (awaiting instructions)*
+
+---
+
+## Step 5: Google ADK Agents Served Over A2A, Called from CrewAI ✅
+
+**Date:** 2026-10-25
+**Status:** Complete
+
+### What was done
+
+1. **Repo Analyst / Planner ADK Agent (`src/repoagent/agents/adk/planner.py`)**:
+   - Implemented `repo_planner` agent using Google ADK with `output_schema=PlannerOutput`.
+   - Produces structured architectural `repo_map` and implementation `Plan` matching Pydantic schemas.
+   - Removed `PASSWORD_RESET_PLAN` fixture from all live paths (`flow.py`, `scripts/run_coding_loop.py`), reserving it exclusively for unit test fixtures.
+   - Generated A2A `AgentCard` with skills `analyze_repo` and `generate_plan`.
+   - **Grounding Architecture**: The Planner receives repository context (directory tree and key source files) via client wrapper tool calls to repo-reader MCP tools (`list_tree`, `read_file`). Each tool call is measured and audited with tool name, arguments, duration, and status to `runs/<run_id>/a2a.jsonl`. The Planner does not execute autonomous tool-calling loops over A2A; instead, the client wrapper deterministically prefetches file contents and hierarchy via repo-reader and injects them directly into the prompt.
+   - **Plan Path Validation & 1-Retry Cap**: Implemented deterministic path validation (`validate_plan_paths`). Verifies all modified files exist in the workspace and all new files lie within the workspace following package layout (`src/notes_app/...`, `tests/...`). Nonexistent paths (e.g. hallucinated `src/auth.py`) trigger a single retry with the real workspace tree and error feedback. If the second plan remains invalid, the flow terminates safely with `status=needs_human`.
+
+2. **Code Reviewer ADK Agent (`src/repoagent/agents/adk/reviewer.py`)**:
+   - Implemented `code_reviewer` agent using Google ADK with `output_schema=ReviewReport`.
+   - Takes real disk-computed git diffs (`git add -N . && git diff HEAD`), deterministic `TestReport` (with `workspace_hash` binding), and `Plan`.
+   - Replaced hardcoded 'approve' review stub with live A2A evaluation.
+   - Enforces invariant: Reviewer verdict runs only after passing deterministic tests, and verdict never overrides test results.
+   - If verdict is `request_changes`, actionable findings are routed back to the Coding Agent once (counting toward the retry budget).
+   - Generated A2A `AgentCard` with skill `review_diff`.
+
+3. **A2A Server Exposure & Network Configuration (`src/repoagent/agents/adk/server.py`)**:
+   - Exposed each ADK agent on its own dedicated port via Starlette and `google.adk.a2a.utils.agent_to_a2a.to_a2a`:
+     - Planner on `http://127.0.0.1:8001/` (`.well-known/agent-card.json`)
+     - Reviewer on `http://127.0.0.1:8002/` (`.well-known/agent-card.json`)
+   - Default host binds strictly to `127.0.0.1` (configurable via `REPOAGENT_A2A_HOST`).
+   - Agent cards dynamically resolve URLs via `get_public_url()` using `REPOAGENT_A2A_PUBLIC_URL` or `127.0.0.1`, guaranteeing the card URL is never `0.0.0.0`.
+   - CLI entry point supporting `--agent planner`, `--agent reviewer`, or `--all`.
+
+4. **A2A Client Wrapper & Flow Integration (`src/repoagent/a2a_client.py`, `src/repoagent/flow.py`)**:
+   - Implemented `A2AClient` supporting agent card fetching over HTTP (`/.well-known/agent-card.json`), task submission, JSON text extraction, and strict Pydantic model validation (`PlannerOutput.model_validate_json`, `ReviewReport.model_validate_json`).
+   - Comprehensive audit logging to `runs/<run_id>/a2a.jsonl` recording `timestamp`, `agent_card_url`, `task_id`, `duration_s`, `status`, summaries, with strict sanitization preventing secrets/tokens from leaking into logs.
+   - Rejection of malformed or schema-violating responses in code with errors recorded in `RunState.errors`.
+
+5. **Replay Mode Support**:
+   - Added `--replay` flag to `scripts/run_coding_loop.py`.
+   - Replay runs store evidence under `runs/replay_<run_id>`, flag `is_replay: True` in `RunState` and console logs, and apply pre-recorded `KNOWN_GOOD_PASSWORD_RESET_CHANGESET`.
+   - Replay mode executes the real deterministic Docker test runner and real A2A Reviewer, validating the end-to-end passing flow.
+
+6. **Deployment Scripts & Docker Support**:
+   - Added `scripts/start_agents.sh` (Linux/macOS) and `scripts/start_agents.ps1` (Windows) defaulting to `127.0.0.1`.
+   - Added `Dockerfile.agents`, `docker-compose.yml`, and `docker-compose.agents.yml` for multi-container orchestration.
+   - Added verification test suite `scripts/verify_step5_deliverables.py`.
+
+7. **Testing & Invariants Preservation**:
+   - Added `tests/test_a2a.py` (17 tests) covering agent card schemas, HTTP fetch, JSON cleaning, A2A error handling, schema validation rejection, audit logging with secret redaction, flow routing, nonexistent path rejection, valid path acceptance, and 1-retry then `needs_human`.
+   - Strictly preserved all Step 4 invariants: deterministic test runner verification, `workspace_hash` binding, disk-derived git diffs, duplicate test rejection, atomic ChangeSet rollback, and `needs_human` retry bounds.
+
+### How to run
+
+```bash
+# Start ADK A2A servers (defaults to 127.0.0.1)
+python -m repoagent.agents.adk.server --all
+
+# Or on Windows PowerShell:
+.\scripts\start_agents.ps1
+
+# Run Step 5 deliverables verification (real round-trips against Ollama)
+python scripts/verify_step5_deliverables.py
+
+# Run all test suites
+pytest tests/ -v
+pytest demo_repo/tests/ -v
+
+# Run lint and format checks
+ruff check src/ tests/ scripts/ demo_repo/
+ruff format --check src/ tests/ scripts/ demo_repo/
+```
+
+### Test results
+
+| Test file | Tests | Status |
+|-----------|-------|--------|
+| `tests/test_a2a.py` | 17 unit tests | ✅ All passing |
+| `tests/test_changeset_applier.py` | 9 unit tests | ✅ All passing |
+| `tests/test_coding_loop.py` | 5 unit tests | ✅ All passing |
+| `tests/test_flow.py` | 5 unit tests | ✅ All passing |
+| `tests/test_mcp_tools.py` | 31 unit tests | ✅ All passing |
+| `tests/test_providers.py` | 10 unit tests | ✅ All passing |
+| `tests/test_retry.py` | 5 unit tests | ✅ All passing |
+| `tests/test_schemas.py` | 28 unit tests | ✅ All passing |
+| `tests/test_verification_hardening.py` | 3 unit tests | ✅ All passing |
+| **Project Tests Subtotal** | **113 unit tests** | **✅ 113 passed** |
+| `demo_repo/tests/test_auth.py` | 6 unit tests | ✅ All passing |
+| `demo_repo/tests/test_notes.py` | 6 unit tests | ✅ All passing |
+| **Demo Repo Subtotal** | **12 unit tests** | **✅ 12 passed** |
+| **Total Test Suite** | **125 tests** | **✅ 125 passed (100%)** |
+| Ruff linting & formatting | All files | ✅ Clean (0 errors) |
+
+---
+
+*Next step: Step 6 (awaiting instructions)*

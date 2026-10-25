@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir hatchling && \
+    pip install --no-cache-dir -e .
+
+COPY src/ ./src/
+
+EXPOSE 8001 8002
+
+CMD ["python", "-m", "repoagent.agents.adk.server"]

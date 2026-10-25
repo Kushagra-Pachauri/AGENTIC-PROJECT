@@ -190,6 +190,9 @@ def _format_test_report(
         if match:
             failed_tests.append(match.group(1))
 
+    if not passed and not failed_tests:
+        failed_tests.append(f"{command.split()[0]}:exit_{exit_code}")
+
     if timed_out:
         log_tail = (log_tail + "\n[TIMEOUT] Command timed out and was killed.").strip()
 
@@ -200,6 +203,7 @@ def _format_test_report(
         failed_tests=failed_tests,
         log_tail=log_tail,
         duration_s=duration_s,
+        raw_output=combined_output,
     )
 
 
@@ -213,9 +217,32 @@ def run_tests(command: str) -> TestReport:
     """Run a test command inside the Docker sandbox.
 
     Only these commands are allowed: pytest, ruff, npm test, eslint.
-    Returns a TestReport with pass/fail, exit code, failed tests, and log tail.
+    For pytest runs, executes py_compile and ruff F821 undefined name checks
+    prior to running the test suite. Any failure counts as an iteration failure.
     """
     validated = _validate_command(command)
+
+    # Pre-flight checks for python test runs
+    if validated.startswith("pytest"):
+        # 1. py_compile check across workspace
+        compile_cmd = (
+            'python -c "'
+            "import pathlib, py_compile; "
+            "[py_compile.compile(str(p), cfile='/tmp/check.pyc', doraise=True) "
+            "for p in pathlib.Path('.').rglob('*.py') if not p.name.startswith('.') "
+            "and '.venv' not in p.parts]"
+            '"'
+        )
+        compile_res = _run_in_docker(compile_cmd)
+        if compile_res.get("exit_code", -1) != 0:
+            return _format_test_report("py_compile", compile_res)
+
+        # 2. Ruff undefined names check (F821)
+        ruff_cmd = "ruff check --no-cache --select F821 ."
+        ruff_res = _run_in_docker(ruff_cmd)
+        if ruff_res.get("exit_code", -1) != 0:
+            return _format_test_report("ruff check --select F821 .", ruff_res)
+
     result = _run_in_docker(validated)
     return _format_test_report(validated, result)
 

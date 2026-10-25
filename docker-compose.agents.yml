@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  repo-planner:
+    build:
+      context: .
+      dockerfile: Dockerfile.agents
+    image: repoagent-planner:latest
+    container_name: repoagent-planner
+    command:
+      - python
+      - -m
+      - repoagent.agents.adk.server
+      - --agent
+      - planner
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8001"
+      - --workspace
+      - /workspace/demo_repo
+    ports:
+      - "8001:8001"
+    environment:
+      - REPOAGENT_PROVIDER=${REPOAGENT_PROVIDER:-ollama}
+      - REPOAGENT_MODEL=${REPOAGENT_MODEL:-qwen2.5-coder:3b}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      - REPOAGENT_WORKSPACE=/workspace/demo_repo
+    volumes:
+      - ./demo_repo:/workspace/demo_repo:ro
+    restart: unless-stopped
+
+  code-reviewer:
+    build:
+      context: .
+      dockerfile: Dockerfile.agents
+    image: repoagent-reviewer:latest
+    container_name: repoagent-reviewer
+    command:
+      - python
+      - -m
+      - repoagent.agents.adk.server
+      - --agent
+      - reviewer
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8002"
+    ports:
+      - "8002:8002"
+    environment:
+      - REPOAGENT_PROVIDER=${REPOAGENT_PROVIDER:-ollama}
+      - REPOAGENT_MODEL=${REPOAGENT_MODEL:-qwen2.5-coder:3b}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+    restart: unless-stopped
