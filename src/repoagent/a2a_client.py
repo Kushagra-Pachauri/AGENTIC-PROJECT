@@ -93,6 +93,7 @@ def log_a2a_interaction(
     request_summary: str,
     response_summary: str,
     error: str | None = None,
+    is_replay: bool = False,
 ) -> None:
     """Log an A2A interaction to a2a.jsonl, guaranteeing no secrets are recorded."""
     log_path = Path(log_file)
@@ -107,6 +108,8 @@ def log_a2a_interaction(
         "request_summary": request_summary,
         "response_summary": response_summary,
     }
+    if is_replay:
+        entry["is_replay"] = True
     if error:
         entry["error"] = error
 
@@ -152,6 +155,7 @@ class A2AClient:
         task_id: str | None = None,
         context_id: str | None = None,
         log_file: Path | str | None = None,
+        is_replay: bool = False,
     ) -> str:
         """Send a task message over JSON-RPC 2.0 SendMessage and return raw output text.
 
@@ -221,6 +225,7 @@ class A2AClient:
                     if status == "success"
                     else (error_msg or "error"),
                     error=error_msg,
+                    is_replay=is_replay,
                 )
 
     def request_plan(
@@ -230,6 +235,7 @@ class A2AClient:
         run_id: str | None = None,
         log_file: Path | str | None = None,
         extra_instruction: str | None = None,
+        is_replay: bool = False,
     ) -> PlannerOutput:
         """Call the Planner ADK agent and strictly validate the returned PlannerOutput."""
         from repoagent.mcp_servers import repo_reader
@@ -242,19 +248,19 @@ class A2AClient:
         tree_text = repo_reader.list_tree(".", max_depth=4)
         t_tree_dur = time.time() - t_tree_start
         if log_file:
-            self._log_audit(
-                log_file,
-                {
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "event": "tool_call",
-                    "agent": "repo-planner",
-                    "task_id": run_id or "planner-task",
-                    "tool": "repo_reader.list_tree",
-                    "arguments": {"directory": ".", "max_depth": 4},
-                    "duration_s": round(t_tree_dur, 4),
-                    "status": "success",
-                },
-            )
+            tool_entry = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "event": "tool_call",
+                "agent": "repo-planner",
+                "task_id": run_id or "planner-task",
+                "tool": "repo_reader.list_tree",
+                "arguments": {"directory": ".", "max_depth": 4},
+                "duration_s": round(t_tree_dur, 4),
+                "status": "success",
+            }
+            if is_replay:
+                tool_entry["is_replay"] = True
+            self._log_audit(log_file, tool_entry)
 
         # 2. repo_reader.read_file tool calls
         files_context: list[str] = []
@@ -271,19 +277,19 @@ class A2AClient:
                 t_read_dur = time.time() - t_read_start
                 files_context.append(f"--- {candidate} ---\n{content}")
                 if log_file:
-                    self._log_audit(
-                        log_file,
-                        {
-                            "timestamp": datetime.now(UTC).isoformat(),
-                            "event": "tool_call",
-                            "agent": "repo-planner",
-                            "task_id": run_id or "planner-task",
-                            "tool": "repo_reader.read_file",
-                            "arguments": {"path": candidate, "max_lines": 200},
-                            "duration_s": round(t_read_dur, 4),
-                            "status": "success",
-                        },
-                    )
+                    tool_entry = {
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "event": "tool_call",
+                        "agent": "repo-planner",
+                        "task_id": run_id or "planner-task",
+                        "tool": "repo_reader.read_file",
+                        "arguments": {"path": candidate, "max_lines": 200},
+                        "duration_s": round(t_read_dur, 4),
+                        "status": "success",
+                    }
+                    if is_replay:
+                        tool_entry["is_replay"] = True
+                    self._log_audit(log_file, tool_entry)
 
         files_str = "\n".join(files_context)
 
@@ -306,6 +312,7 @@ class A2AClient:
             text=prompt,
             task_id=run_id,
             log_file=log_file,
+            is_replay=is_replay,
         )
         clean = clean_json_text(raw_text)
         try:
@@ -326,6 +333,7 @@ class A2AClient:
         test_report: TestReport,
         run_id: str | None = None,
         log_file: Path | str | None = None,
+        is_replay: bool = False,
     ) -> ReviewReport:
         """Call the Code Reviewer ADK agent and strictly validate the returned ReviewReport."""
         prompt = (
@@ -347,6 +355,7 @@ class A2AClient:
             text=prompt,
             task_id=run_id,
             log_file=log_file,
+            is_replay=is_replay,
         )
         clean = clean_json_text(raw_text)
         try:

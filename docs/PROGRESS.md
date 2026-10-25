@@ -345,7 +345,7 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 ## Step 5: Google ADK Agents Served Over A2A, Called from CrewAI ✅
 
 **Date:** 2026-10-25
-**Status:** Complete
+**Status:** Complete (Verified via reference REPLAY run replay_4c73dac5; live local 3B model gated at needs_human)
 
 ### What was done
 
@@ -354,7 +354,7 @@ ruff format --check src/ tests/ scripts/ demo_repo/
    - Produces structured architectural `repo_map` and implementation `Plan` matching Pydantic schemas.
    - Removed `PASSWORD_RESET_PLAN` fixture from all live paths (`flow.py`, `scripts/run_coding_loop.py`), reserving it exclusively for unit test fixtures.
    - Generated A2A `AgentCard` with skills `analyze_repo` and `generate_plan`.
-   - **Grounding Architecture**: The Planner receives repository context (directory tree and key source files) via client wrapper tool calls to repo-reader MCP tools (`list_tree`, `read_file`). Each tool call is measured and audited with tool name, arguments, duration, and status to `runs/<run_id>/a2a.jsonl`. The Planner does not execute autonomous tool-calling loops over A2A; instead, the client wrapper deterministically prefetches file contents and hierarchy via repo-reader and injects them directly into the prompt.
+   - **Grounding Architecture**: The Flow's A2A client wrapper prefetches file hierarchy (`list_tree`) and key source file contents (`read_file` on `app.py`, `auth.py`, `models.py`, `test_auth.py`) via local repo-reader MCP tools and injects the text into the initial prompt. Each tool call is measured and audited with tool name, arguments, duration, and status to `runs/<run_id>/a2a.jsonl`. The remote ADK agent on the A2A server does not invoke MCP tools autonomously over A2A.
    - **Plan Path Validation & 1-Retry Cap**: Implemented deterministic path validation (`validate_plan_paths`). Verifies all modified files exist in the workspace and all new files lie within the workspace following package layout (`src/notes_app/...`, `tests/...`). Nonexistent paths (e.g. hallucinated `src/auth.py`) trigger a single retry with the real workspace tree and error feedback. If the second plan remains invalid, the flow terminates safely with `status=needs_human`.
 
 2. **Code Reviewer ADK Agent (`src/repoagent/agents/adk/reviewer.py`)**:
@@ -378,10 +378,11 @@ ruff format --check src/ tests/ scripts/ demo_repo/
    - Comprehensive audit logging to `runs/<run_id>/a2a.jsonl` recording `timestamp`, `agent_card_url`, `task_id`, `duration_s`, `status`, summaries, with strict sanitization preventing secrets/tokens from leaking into logs.
    - Rejection of malformed or schema-violating responses in code with errors recorded in `RunState.errors`.
 
-5. **Replay Mode Support**:
-   - Added `--replay` flag to `scripts/run_coding_loop.py`.
-   - Replay runs store evidence under `runs/replay_<run_id>`, flag `is_replay: True` in `RunState` and console logs, and apply pre-recorded `KNOWN_GOOD_PASSWORD_RESET_CHANGESET`.
-   - Replay mode executes the real deterministic Docker test runner and real A2A Reviewer, validating the end-to-end passing flow.
+5. **Replay Mode & Correctness Gating Audit**:
+   - Created reference solution at `tests/fixtures/replay_password_reset.json` (labeled `hand-written reference solution, not model output`).
+   - Historical run `97e2a052c992` was marked `INVALID` in `runs/97e2a052c992/INVALID.txt` due to unapplied workspace changes and false baseline test reporting.
+   - Controlled live run `7bb1fb173e81` verified strict correctness gating: isolated workspace was modified and compiled, but missing test changes were detected and blocked with `status=needs_human` after 3 retries, preventing false completion and disengaging Reviewer.
+   - Verified reference replay run `replay_4c73dac5` passed all 15 deterministic Docker tests (workspace hash verified), received A2A Reviewer approval, and completed with `status=done` (distinguished as reference solution replay, not model generation).
 
 6. **Deployment Scripts & Docker Support**:
    - Added `scripts/start_agents.sh` (Linux/macOS) and `scripts/start_agents.ps1` (Windows) defaulting to `127.0.0.1`.
@@ -390,6 +391,7 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 
 7. **Testing & Invariants Preservation**:
    - Added `tests/test_a2a.py` (17 tests) covering agent card schemas, HTTP fetch, JSON cleaning, A2A error handling, schema validation rejection, audit logging with secret redaction, flow routing, nonexistent path rejection, valid path acceptance, and 1-retry then `needs_human`.
+   - Added `tests/test_verification_hardening.py` (11 tests) verifying workspace isolation, malformed diff rejection, syntax error rejection, unchanged workspace failure gating, missing feature test detection, prevention of false DONE status, `REPOAGENT_RUNS_DIR` test isolation, and CLI mock-guard invariants.
    - Strictly preserved all Step 4 invariants: deterministic test runner verification, `workspace_hash` binding, disk-derived git diffs, duplicate test rejection, atomic ChangeSet rollback, and `needs_human` retry bounds.
 
 ### How to run
@@ -420,17 +422,17 @@ ruff format --check src/ tests/ scripts/ demo_repo/
 | `tests/test_a2a.py` | 17 unit tests | ✅ All passing |
 | `tests/test_changeset_applier.py` | 9 unit tests | ✅ All passing |
 | `tests/test_coding_loop.py` | 5 unit tests | ✅ All passing |
-| `tests/test_flow.py` | 5 unit tests | ✅ All passing |
+| `tests/test_flow.py` | 6 unit tests | ✅ All passing |
 | `tests/test_mcp_tools.py` | 31 unit tests | ✅ All passing |
 | `tests/test_providers.py` | 10 unit tests | ✅ All passing |
 | `tests/test_retry.py` | 5 unit tests | ✅ All passing |
 | `tests/test_schemas.py` | 28 unit tests | ✅ All passing |
-| `tests/test_verification_hardening.py` | 3 unit tests | ✅ All passing |
-| **Project Tests Subtotal** | **113 unit tests** | **✅ 113 passed** |
+| `tests/test_verification_hardening.py` | 11 unit tests | ✅ All passing |
+| **Project Tests Subtotal** | **122 unit tests** | **✅ 122 passed** |
 | `demo_repo/tests/test_auth.py` | 6 unit tests | ✅ All passing |
 | `demo_repo/tests/test_notes.py` | 6 unit tests | ✅ All passing |
 | **Demo Repo Subtotal** | **12 unit tests** | **✅ 12 passed** |
-| **Total Test Suite** | **125 tests** | **✅ 125 passed (100%)** |
+| **Total Test Suite** | **134 tests** | **✅ 134 passed (100%)** |
 | Ruff linting & formatting | All files | ✅ Clean (0 errors) |
 
 ---

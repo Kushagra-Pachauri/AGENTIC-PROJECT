@@ -44,3 +44,14 @@ class _DummyStorage:
 
 lancedb_storage.LanceDBStorage = _DummyStorage
 unified_memory.LanceDBStorage = _DummyStorage
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_runs(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shield production runs/ directory from test executions."""
+    test_runs_dir = tmp_path_factory.mktemp("test_runs")
+    monkeypatch.setenv("REPOAGENT_RUNS_DIR", str(test_runs_dir))

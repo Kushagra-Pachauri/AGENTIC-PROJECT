@@ -331,7 +331,9 @@ def run_coding_loop(
 ) -> int:
     raw_id = uuid.uuid4().hex[:8]
     run_id = f"replay_{raw_id}" if replay else raw_id
-    run_dir = Path(f"runs/{run_id}").resolve()
+    from repoagent.workspace_utils import get_runs_dir
+
+    run_dir = (get_runs_dir() / run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     console_log_file = run_dir / "console.log"
     workspace = run_dir / "workspace"

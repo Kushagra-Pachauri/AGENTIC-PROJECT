@@ -183,6 +183,9 @@ class RunState(BaseModel):
     is_replay: bool = Field(
         default=False, description="Whether this run used pre-recorded replay mode"
     )
+    replay_label: str = Field(
+        default="", description="Label indicating origin of changes in replay mode"
+    )
 
     # Status tracking
     status: RunStatus = Field(default=RunStatus.RUNNING)

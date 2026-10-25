@@ -15,7 +15,7 @@ from pathlib import Path
 from repoagent.flow import RepoAgentFlow
 from repoagent.providers import get_provider
 from repoagent.schemas import RunState, RunStatus
-from repoagent.workspace_utils import setup_workspace
+from repoagent.workspace_utils import get_runs_dir, setup_workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Use deterministic stubs instead of live agents",
     )
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        default=False,
+        help="Run in replay mode: apply reference ChangeSet, test runner and Reviewer",
+    )
     return parser
 
 
@@ -88,14 +94,19 @@ def main(argv: list[str] | None = None) -> int:
     _ = get_provider()
 
     # Initialize RunState
+    import uuid
+
+    run_id = f"replay_{uuid.uuid4().hex[:8]}" if args.replay else uuid.uuid4().hex[:12]
     initial_state = RunState(
+        run_id=run_id,
         requirement=args.requirement,
         repo_url=args.repo,
         max_retries=args.max_retries,
+        is_replay=args.replay,
     )
 
     # Always isolate target repository into a fresh workspace under runs/<run_id>/workspace
-    run_dir = Path("runs") / initial_state.run_id
+    run_dir = get_runs_dir() / initial_state.run_id
     isolated_workspace = run_dir / "workspace"
     source_repo = Path(args.repo).resolve()
     setup_workspace(source_repo, isolated_workspace)

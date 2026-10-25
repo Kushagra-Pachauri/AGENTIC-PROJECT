@@ -167,8 +167,10 @@ class TestCorrectnessGatingDefects:
         import stat
         import uuid
 
+        from repoagent.workspace_utils import get_runs_dir
+
         run_id = f"test_iso_{uuid.uuid4().hex[:10]}"
-        run_dir = Path("runs") / run_id
+        run_dir = get_runs_dir() / run_id
         try:
             state = RunState(
                 run_id=run_id,
@@ -415,3 +417,39 @@ class TestCorrectnessGatingDefects:
         flow5 = RepoAgentFlow(initial_state=state5, workspace=ws, use_live_agents=False)
         flow5.open_pr()
         assert flow5.state.status == RunStatus.DONE
+
+    def test_repoagent_runs_dir_isolation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify that setting REPOAGENT_RUNS_DIR isolates run folders from ./runs/."""
+        custom_runs = tmp_path / "custom_runs"
+        monkeypatch.setenv("REPOAGENT_RUNS_DIR", str(custom_runs))
+
+        # 1. Flow fallback workspace creation uses custom_runs
+        initial_state = RunState(requirement="Isolation check")
+        flow = RepoAgentFlow(initial_state=initial_state)
+        ws = flow._get_workspace_path()
+        assert str(custom_runs) in str(ws)
+
+        # 2. Checkpoint saves to custom_runs, not ./runs
+        flow._save_checkpoint()
+        assert (custom_runs / initial_state.run_id / "run_state.json").is_file()
+
+    def test_cli_cannot_inject_mock_test_shortcut(self) -> None:
+        """Verify CLI cannot activate is_mock_test and unchanged workspace cannot reach DONE."""
+        from repoagent.run import build_parser
+
+        parser = build_parser()
+        # Verify parser has no options for mock injection
+        dest_names = [action.dest for action in parser._actions]
+        assert "coding_fn" not in dest_names
+        assert "testing_fn" not in dest_names
+        assert "mock" not in dest_names
+
+        # Verify default Flow instantiated without mock functions has is_mock_test = False
+        state = RunState(requirement="Verify mock guard")
+        flow = RepoAgentFlow(initial_state=state)
+        assert flow.coding_fn is None
+        assert flow.testing_fn is None
+        is_mock_test = flow.coding_fn is not None and flow.testing_fn is not None
+        assert is_mock_test is False

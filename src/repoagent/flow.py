@@ -131,9 +131,9 @@ class RepoAgentFlow(Flow[RunState]):
             return self.workspace
 
         # Isolate baseline repo into a fresh runs/<run_id>/workspace
-        from repoagent.workspace_utils import setup_workspace
+        from repoagent.workspace_utils import get_runs_dir, setup_workspace
 
-        run_dir = Path("runs") / self.state.run_id
+        run_dir = get_runs_dir() / self.state.run_id
         isolated_ws = (run_dir / "workspace").resolve()
         if not (isolated_ws / ".git").is_dir():
             source = (
@@ -226,6 +226,7 @@ class RepoAgentFlow(Flow[RunState]):
                     workspace=workspace,
                     run_id=self.state.run_id,
                     log_file=log_file,
+                    is_replay=self.state.is_replay,
                 )
                 is_valid, path_errors = validate_plan_paths(planner_output.plan, workspace)
                 if not is_valid:
@@ -248,6 +249,7 @@ class RepoAgentFlow(Flow[RunState]):
                         run_id=self.state.run_id,
                         log_file=log_file,
                         extra_instruction=retry_feedback,
+                        is_replay=self.state.is_replay,
                     )
                     is_valid_2, path_errors_2 = validate_plan_paths(planner_output.plan, workspace)
                     if not is_valid_2:
@@ -347,10 +349,24 @@ class RepoAgentFlow(Flow[RunState]):
 
         # Check REPLAY mode first: apply known-good pre-recorded ChangeSet
         if self.state.is_replay:
-            print("[REPLAY MODE] Applying pre-recorded ChangeSet (NOT a live generation).")
-            from repoagent.fixtures import KNOWN_GOOD_PASSWORD_RESET_CHANGESET
+            print("[REPLAY MODE] Applying reference ChangeSet (NOT live generation).")
+            fixture_path = Path("tests/fixtures/replay_password_reset.json")
+            if fixture_path.is_file():
+                import json
 
-            self.state.changes = KNOWN_GOOD_PASSWORD_RESET_CHANGESET
+                data = json.loads(fixture_path.read_text(encoding="utf-8"))
+                label = data.get("label", "hand-written reference solution, not model output")
+                summary = data.get("summary", "Hand-written reference solution, not model output")
+                self.state.changes = ChangeSet(
+                    files=[FileChange(**f) for f in data["files"]],
+                    summary=summary,
+                )
+                self.state.replay_label = label
+            else:
+                from repoagent.fixtures import KNOWN_GOOD_PASSWORD_RESET_CHANGESET
+
+                self.state.changes = KNOWN_GOOD_PASSWORD_RESET_CHANGESET
+                self.state.replay_label = "hand-written reference solution, not model output"
         # 1. Custom mock/injected coding function (used in unit tests for fast verification)
         elif self.coding_fn is not None:
             self.state.changes = self.coding_fn(self.state)
@@ -660,6 +676,7 @@ class RepoAgentFlow(Flow[RunState]):
                     test_report=last_test,
                     run_id=self.state.run_id,
                     log_file=log_file,
+                    is_replay=self.state.is_replay,
                 )
                 self.state.review = review_report
             except Exception as exc:

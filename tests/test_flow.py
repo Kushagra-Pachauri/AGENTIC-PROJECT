@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from repoagent.flow import RepoAgentFlow
 from repoagent.run import main
-from repoagent.schemas import RunState, RunStatus
+from repoagent.schemas import ReviewReport, ReviewVerdict, RunState, RunStatus, TestReport
 
 
 class TestRepoAgentFlow:
@@ -132,3 +133,35 @@ class TestRepoAgentFlow:
         assert data["requirement"] == "Add password reset"
         assert data["status"] == "done"
         assert data["branch"].startswith("repoagent/")
+
+    def test_replay_mode_loads_reference_fixture(self, tmp_path: Path) -> None:
+        """Verify replay mode loads the hand-written reference solution and sets replay flags."""
+        initial_state = RunState(
+            requirement="Add a password-reset functionality",
+            is_replay=True,
+        )
+        flow = RepoAgentFlow(
+            initial_state=initial_state,
+            workspace=tmp_path,
+            coding_fn=None,
+            testing_fn=lambda s: TestReport(
+                command="pytest",
+                passed=True,
+                exit_code=0,
+                workspace_hash="mock_hash",
+            ),
+            review_fn=lambda p, d, t: ReviewReport(
+                verdict=ReviewVerdict.APPROVE,
+                summary="Approved reference replay",
+            ),
+        )
+        flow.kickoff()
+
+        assert flow.state.is_replay is True
+        assert flow.state.replay_label == "hand-written reference solution, not model output"
+        assert flow.state.changes is not None
+        assert len(flow.state.changes.files) == 3
+        paths = [f.path for f in flow.state.changes.files]
+        assert "src/notes_app/auth.py" in paths
+        assert "src/notes_app/app.py" in paths
+        assert "tests/test_auth.py" in paths

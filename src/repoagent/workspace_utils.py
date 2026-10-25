@@ -28,6 +28,11 @@ _EXCLUDED_EXTS = {
 }
 
 
+def get_runs_dir() -> Path:
+    """Return the base directory for run artifacts, defaulting to 'runs'."""
+    return Path(os.environ.get("REPOAGENT_RUNS_DIR", "runs")).resolve()
+
+
 def compute_workspace_hash(workspace: Path | str) -> str:
     """Compute deterministic SHA-256 hash of all source and test files in workspace."""
     ws = Path(workspace).resolve()
