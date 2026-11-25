@@ -38,7 +38,51 @@ except ImportError:
         return res
 
 DEFAULT_API_URL = os.environ.get("REPOAGENT_API_URL", "http://localhost:8000").rstrip("/")
+DEFAULT_GATEWAY_URL = "https://doubling-symphonic-kennel.ngrok-free.dev"
+DEFAULT_GATEWAY_TOKEN = "repoagent-live-token-2026"
 DEFAULT_ALLOWED_REPOS = ["demo_repo"]
+
+
+def resolve_config_value(key: str, default: str = "") -> str:
+    """Safely resolve configuration from st.secrets, st.query_params, or os.environ."""
+    # 1. Streamlit Secrets (used by Streamlit Community Cloud)
+    try:
+        if hasattr(st, "secrets"):
+            for candidate in (key, key.lower(), key.replace("REPOAGENT_", "").lower()):
+                if candidate in st.secrets:
+                    val = str(st.secrets[candidate]).strip()
+                    if val:
+                        return val
+    except Exception:
+        pass
+
+    # 2. URL Query Parameters (?gw_url=... or ?gateway_url=... or ?gw=...)
+    try:
+        if hasattr(st, "query_params"):
+            for candidate in (
+                key,
+                key.lower(),
+                key.replace("REPOAGENT_", "").lower(),
+                "gw_url",
+                "gateway_url",
+                "gw",
+                "token",
+            ):
+                if candidate in st.query_params:
+                    val = str(st.query_params[candidate]).strip()
+                    if val:
+                        return val
+    except Exception:
+        pass
+
+    # 3. Process Environment Variables
+    env_val = os.environ.get(key, "").strip()
+    if not env_val and key.startswith("REPOAGENT_"):
+        env_val = os.environ.get(key.replace("REPOAGENT_", ""), "").strip()
+    if env_val:
+        return env_val
+
+    return default.strip()
 
 # Design System Palette Tokens
 PALETTE = {
@@ -633,7 +677,7 @@ def get_showcase_dirs() -> list[Path]:
     return [p.resolve() for p in fallback if p.is_dir()]
 
 
-def fetch_health(api_url: str | None = DEFAULT_API_URL, timeout: float = 3.0) -> dict[str, Any] | None:
+def fetch_health(api_url: str | None = DEFAULT_API_URL, timeout: float = 6.0) -> dict[str, Any] | None:
     """Fetch health diagnostics from FastAPI backend or return public showcase status."""
     if api_url:
         try:
@@ -659,7 +703,7 @@ def fetch_health(api_url: str | None = DEFAULT_API_URL, timeout: float = 3.0) ->
 
 
 def fetch_runs(
-    api_url: str | None = DEFAULT_API_URL, auth_token: str | None = None, timeout: float = 3.0
+    api_url: str | None = DEFAULT_API_URL, auth_token: str | None = None, timeout: float = 8.0
 ) -> list[dict[str, Any]]:
     """Fetch list of runs from FastAPI backend, falling back to disk in standalone/showcase mode."""
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
@@ -752,7 +796,7 @@ def fetch_run_details(
     run_id: str,
     api_url: str | None = DEFAULT_API_URL,
     auth_token: str | None = None,
-    timeout: float = 3.0,
+    timeout: float = 8.0,
 ) -> dict[str, Any] | None:
     """Fetch structured run status and reports from FastAPI backend or local disk."""
     if not run_id:
@@ -793,7 +837,7 @@ def fetch_run_events(
     limit: int = 100,
     api_url: str | None = DEFAULT_API_URL,
     auth_token: str | None = None,
-    timeout: float = 3.0,
+    timeout: float = 8.0,
 ) -> list[dict[str, Any]]:
     """Fetch recorded audit events for a run from FastAPI backend or local disk."""
     if not run_id:
@@ -1604,12 +1648,12 @@ def render_workbench(api_url: str = DEFAULT_API_URL, auth_token: str | None = No
     gw_url = (
         st.session_state.get("ui_gw_url")
         or st.session_state.get("gateway_url")
-        or os.environ.get("REPOAGENT_GATEWAY_URL", "")
+        or resolve_config_value("REPOAGENT_GATEWAY_URL", DEFAULT_GATEWAY_URL)
     ).strip()
     gw_token = (
         st.session_state.get("ui_gw_token")
         or st.session_state.get("gateway_token")
-        or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+        or resolve_config_value("REPOAGENT_AUTH_TOKEN", DEFAULT_GATEWAY_TOKEN)
     ).strip()
 
     with st.expander("⚙️ Advanced Connection Settings", expanded=False):
@@ -2203,12 +2247,12 @@ def render_dashboard() -> None:
     gw_url = (
         st.session_state.get("ui_gw_url")
         or st.session_state.get("gateway_url")
-        or os.environ.get("REPOAGENT_GATEWAY_URL", "")
+        or resolve_config_value("REPOAGENT_GATEWAY_URL", DEFAULT_GATEWAY_URL)
     ).strip()
     gw_token = (
         st.session_state.get("ui_gw_token")
         or st.session_state.get("gateway_token")
-        or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+        or resolve_config_value("REPOAGENT_AUTH_TOKEN", DEFAULT_GATEWAY_TOKEN)
     ).strip()
 
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
