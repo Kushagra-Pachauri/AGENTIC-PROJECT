@@ -1,0 +1,5 @@
+# Lightweight dependencies for Streamlit Community Cloud Deployment
+streamlit==1.45.1
+httpx==0.28.1
+pydantic==2.12.5
+python-dotenv==1.2.4
