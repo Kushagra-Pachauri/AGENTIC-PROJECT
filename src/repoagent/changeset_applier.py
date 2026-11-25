@@ -11,9 +11,11 @@ to the run workspace. Enforces workspace isolation:
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,23 @@ def validate_safe_path(workspace: Path, relative_path: str) -> Path:
 
     if resolved == ws:
         msg = "Target path cannot be the workspace root itself."
+        raise ValueError(msg)
+
+    # Symlink escape check
+    real_target = Path(os.path.realpath(str(resolved)))
+    real_ws = Path(os.path.realpath(str(ws)))
+    try:
+        real_target.relative_to(real_ws)
+    except ValueError:
+        msg = f"Symlink escape detected: {relative_path!r} resolves outside workspace."
+        raise ValueError(msg) from None
+
+    # Protected paths check
+    from repoagent.security.tool_guardrails import is_protected_path
+
+    is_prot, prot_reason = is_protected_path(relative_path)
+    if is_prot:
+        msg = f"Protected path cannot be modified: {relative_path!r} ({prot_reason})"
         raise ValueError(msg)
 
     return resolved
@@ -384,12 +403,90 @@ def _verify_baseline_tests_preserved(orig_text: str, new_text: str, diff_text: s
                 raise ValueError(msg)
 
 
+def _atomic_write_text(target_file: Path, text: str, workspace: Path) -> None:
+    """Safely and atomically write text to target_file using a tempfile and os.replace.
+
+    Verifies symlinks, protected paths, and path containment at write time.
+    """
+    ws = Path(workspace).resolve()
+    target = target_file.resolve()
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    # Check symlinks at write time
+    if os.path.islink(target_file) or os.path.islink(target):
+        from repoagent.security.tool_guardrails import GuardrailViolation
+
+        raise GuardrailViolation(
+            f"Symlink writing is forbidden: {target_file}",
+            category="SYMLINK_ESCAPE",
+            target_path=str(target_file),
+        )
+    if os.path.islink(parent) or (parent.exists() and parent.is_symlink()):
+        from repoagent.security.tool_guardrails import GuardrailViolation
+
+        raise GuardrailViolation(
+            f"Parent directory is a symlink: {parent}",
+            category="SYMLINK_ESCAPE",
+            target_path=str(parent),
+        )
+
+    # Realpath containment check
+    real_target = Path(os.path.realpath(str(target)))
+    real_ws = Path(os.path.realpath(str(ws)))
+    try:
+        real_target.relative_to(real_ws)
+    except ValueError:
+        from repoagent.security.tool_guardrails import GuardrailViolation
+
+        raise GuardrailViolation(
+            f"Symlink escape detected: {target_file} resolves to {real_target} outside workspace.",
+            category="SYMLINK_ESCAPE",
+            target_path=str(target_file),
+        ) from None
+
+    fd, temp_path = tempfile.mkstemp(
+        dir=parent,
+        prefix=f".{target.name}.tmp_",
+        text=True,
+    )
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(temp_path, target)
+    except Exception:
+        if os.path.exists(temp_path):
+            with contextlib.suppress(Exception):
+                os.unlink(temp_path)
+        raise
+
+
 def apply_file_change(workspace: Path, change: FileChange) -> Path:
     """Validate and apply a single FileChange to the workspace.
 
     Returns the Path to the modified, created, or deleted file.
     """
+    from repoagent.security.changeset_validator import scan_content_for_secrets
+    from repoagent.security.tool_guardrails import GuardrailViolation, is_protected_path
+
+    # Re-validate target path and protected path status
     target_file = validate_safe_path(workspace, change.path)
+
+    is_prot, prot_reason = is_protected_path(change.path)
+    if is_prot:
+        raise GuardrailViolation(
+            f"Protected path cannot be modified: {change.path!r} ({prot_reason})",
+            category="PROTECTED_PATH",
+            target_path=change.path,
+        )
+
+    # Symlink check on existing target
+    if os.path.islink(target_file) or (target_file.exists() and target_file.is_symlink()):
+        raise GuardrailViolation(
+            f"Target file is a symlink: {change.path}",
+            category="SYMLINK_ESCAPE",
+            target_path=change.path,
+        )
 
     # Protect test fixtures from arbitrary destruction
     if change.path.endswith("conftest.py") and target_file.exists():
@@ -428,6 +525,15 @@ def apply_file_change(workspace: Path, change: FileChange) -> Path:
         else:
             content = change.diff
 
+        # Pre-write rendered secret scan
+        has_secret, _sec_cat, sec_desc = scan_content_for_secrets(content, str(change.path))
+        if has_secret:
+            raise GuardrailViolation(
+                f"Secret detected in rendered content for '{change.path}': {sec_desc}",
+                category="SECRET_EXPOSURE",
+                target_path=change.path,
+            )
+
         if target_file.suffix == ".py":
             try:
                 compile(content, str(target_file), "exec")
@@ -435,8 +541,7 @@ def apply_file_change(workspace: Path, change: FileChange) -> Path:
                 msg = f"Syntax validation failed for created file '{change.path}': {exc}"
                 raise ValueError(msg) from exc
 
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        target_file.write_text(content, encoding="utf-8")
+        _atomic_write_text(target_file, content, workspace)
         return target_file
 
     if not target_file.is_file():
@@ -453,6 +558,15 @@ def apply_file_change(workspace: Path, change: FileChange) -> Path:
     if is_test:
         _verify_baseline_tests_preserved(orig_text, new_text, change.diff)
 
+    # Pre-write rendered secret scan
+    has_secret, _sec_cat, sec_desc = scan_content_for_secrets(new_text, str(change.path))
+    if has_secret:
+        raise GuardrailViolation(
+            f"Secret detected in rendered content for '{change.path}': {sec_desc}",
+            category="SECRET_EXPOSURE",
+            target_path=change.path,
+        )
+
     if target_file.suffix == ".py":
         try:
             compile(new_text, str(target_file), "exec")
@@ -460,21 +574,28 @@ def apply_file_change(workspace: Path, change: FileChange) -> Path:
             msg = f"Syntax validation failed for modified file '{change.path}': {exc}"
             raise ValueError(msg) from exc
 
-    target_file.write_text(new_text, encoding="utf-8")
+    _atomic_write_text(target_file, new_text, workspace)
     return target_file
 
 
-def apply_changeset_to_workspace(changeset: ChangeSet, workspace: Path) -> list[Path]:
+def apply_changeset_to_workspace(
+    changeset: ChangeSet, workspace: Path, run_id: str | None = None
+) -> list[Path]:
     """Apply all file changes in *changeset* to *workspace* with atomic rollback.
 
     Returns the list of modified/created file paths.
-    Raises ValueError if the changeset is empty or any change fails validation.
+    Raises ValueError or GuardrailViolation if the changeset is empty or fails validation.
     If any change fails, all modified or created files are rolled back to their
     exact previous state.
     """
     if not changeset or not changeset.files:
         msg = "ChangeSet contains no files to apply."
         raise ValueError(msg)
+
+    # 0. Comprehensive Step 7.4 ChangeSet & secret validation before touching disk
+    from repoagent.security.changeset_validator import validate_changeset
+
+    validate_changeset(changeset, workspace, run_id=run_id)
 
     # 1. Snapshot all targets before modifying anything
     snapshot: dict[Path, bytes | None] = {}
@@ -510,7 +631,7 @@ def apply_changeset_to_workspace(changeset: ChangeSet, workspace: Path) -> list[
         for path, orig_bytes in snapshot.items():
             try:
                 if orig_bytes is None:
-                    if path.exists():
+                    if path.exists() or os.path.islink(path):
                         path.unlink()
                 else:
                     path.write_bytes(orig_bytes)

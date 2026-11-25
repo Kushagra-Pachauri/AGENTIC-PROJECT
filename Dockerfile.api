@@ -1,0 +1,30 @@
+# Dockerfile for RepoAgent FastAPI Backend
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root application user
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /bin/bash appuser
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir hatchling && \
+    pip install --no-cache-dir -e .
+
+# Ensure workspace and runs directories are owned by appuser
+RUN mkdir -p /app/runs && chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "repoagent.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

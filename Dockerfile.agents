@@ -1,3 +1,4 @@
+# Dockerfile for Google ADK A2A Planner and Reviewer Agents
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -7,13 +8,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root application user
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /bin/bash appuser
+
 COPY pyproject.toml README.md ./
+COPY src/ ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir hatchling && \
     pip install --no-cache-dir -e .
 
-COPY src/ ./src/
+RUN chown -R appuser:appgroup /app
+
+USER appuser
 
 EXPOSE 8001 8002
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8001/.well-known/agent-card.json || exit 1
 
 CMD ["python", "-m", "repoagent.agents.adk.server"]

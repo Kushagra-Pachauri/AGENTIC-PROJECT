@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -18,11 +19,90 @@ from typing import Any
 import uvicorn
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from repoagent.agents.adk.planner import create_planner_agent, get_planner_agent_card
 from repoagent.agents.adk.reviewer import create_reviewer_agent, get_reviewer_agent_card
+from repoagent.security import GuardrailDecision, InputSource, screen_input
 
 logger = logging.getLogger(__name__)
+
+
+class A2AInputGuardrailMiddleware(BaseHTTPMiddleware):
+    """Server-side middleware intercepting and screening inbound A2A requests."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if request.method == "POST":
+            path = request.url.path.rstrip("/")
+            if path in ("", "/"):
+                body_bytes = await request.body()
+                try:
+                    payload = json.loads(body_bytes.decode("utf-8"))
+                    if isinstance(payload, dict) and payload.get("method") == "SendMessage":
+                        params = payload.get("params", {})
+                        msg_dict = params.get("message", {})
+                        parts = msg_dict.get("parts", [])
+                        text_parts = [
+                            p.get("text", "")
+                            for p in parts
+                            if isinstance(p, dict) and p.get("text")
+                        ]
+                        inbound_text = " ".join(text_parts)
+
+                        req_run_id = (
+                            request.headers.get("X-Run-ID")
+                            or request.headers.get("X-Task-ID")
+                            or params.get("task_id")
+                            or (
+                                params.get("task", {}).get("id")
+                                if isinstance(params.get("task"), dict)
+                                else None
+                            )
+                        )
+
+                        if inbound_text:
+                            screening = screen_input(
+                                inbound_text,
+                                source=InputSource.A2A_MESSAGE,
+                                run_id=req_run_id,
+                            )
+
+                            if screening.decision == GuardrailDecision.BLOCK:
+                                return JSONResponse(
+                                    {
+                                        "jsonrpc": "2.0",
+                                        "id": payload.get("id"),
+                                        "error": {
+                                            "code": -32600,
+                                            "message": (
+                                                "Inbound A2A request blocked by security "
+                                                f"guardrail: {screening.reason}"
+                                            ),
+                                        },
+                                    },
+                                    status_code=200,
+                                )
+                            elif screening.decision == GuardrailDecision.FLAG:
+                                return JSONResponse(
+                                    {
+                                        "jsonrpc": "2.0",
+                                        "id": payload.get("id"),
+                                        "error": {
+                                            "code": -32600,
+                                            "message": (
+                                                "Inbound A2A request flagged for human review: "
+                                                f"{screening.reason}"
+                                            ),
+                                        },
+                                    },
+                                    status_code=200,
+                                )
+                except Exception as exc:
+                    logger.error("Error in A2AInputGuardrailMiddleware: %s", exc)
+
+        return await call_next(request)
 
 
 def get_public_url(port: int, host: str = "127.0.0.1") -> str:
@@ -52,6 +132,7 @@ def create_planner_app(
         port=port,
         agent_card=card,
     )
+    app.add_middleware(A2AInputGuardrailMiddleware)
     return app
 
 
@@ -71,6 +152,7 @@ def create_reviewer_app(
         port=port,
         agent_card=card,
     )
+    app.add_middleware(A2AInputGuardrailMiddleware)
     return app
 
 

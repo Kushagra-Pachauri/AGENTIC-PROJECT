@@ -14,12 +14,15 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from repoagent.done_gate import evaluate_done_gate
 from repoagent.mcp_client import call_tool_direct, get_github_params
-from repoagent.schemas import PRSummary, RunState
+from repoagent.schemas import PRSummary, RunState, RunStatus
+from repoagent.workspace_utils import get_runs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +111,10 @@ def build_deterministic_pr_content(
         changed_files = [f.path for f in state.changes.files] if state.changes else []
     is_replay = bool(state.is_replay)
     prefix = "[REPLAY] " if is_replay else ""
-    title = f"{prefix}feat: {state.requirement}".strip()
+    req_summary = state.requirement.strip().splitlines()[0] if state.requirement else "Implement feature"
+    title = f"{prefix}feat: {req_summary}".strip()
+    if len(title) > 250:
+        title = title[:247] + "..."
 
     body_lines: list[str] = []
     if is_replay:
@@ -252,8 +258,53 @@ async def _async_open_and_verify_pr(
     state: RunState,
     workspace: Path,
     base_branch: str = "main",
+    is_live_execution: bool = True,
 ) -> PRSummary:
     """Execute the full PR creation and post-verification lifecycle over GitHub MCP."""
+    if is_live_execution is False:
+        raise ValueError(
+            "Cannot open PR: Offline or fallback execution cannot authorize real PR promotion."
+        )
+
+    if state.status != RunStatus.DONE:
+        raise ValueError(
+            f"Cannot open PR: Run status is '{state.status.value}'. "
+            "PR creation is forbidden for runs not in DONE status."
+        )
+
+    review_prov = getattr(state.review, "provenance", None) if state.review else None
+    if review_prov != "authoritative_adk_reviewer":
+        raise ValueError(
+            f"Cannot open PR: Review provenance is not authoritative ('{review_prov}')."
+        )
+    if state.review and "fallback" in state.review.summary.lower():
+        raise ValueError("Cannot open PR: Review verdict is from a fallback offline stub.")
+
+    if not state.test_reports:
+        raise ValueError("Cannot open PR: Missing test reports.")
+
+    last_rep = state.test_reports[-1]
+    test_prov = getattr(last_rep, "provenance", None)
+    if test_prov != "authoritative_docker_sandbox":
+        raise ValueError(
+            f"Cannot open PR: Test execution provenance is not authoritative ('{test_prov}')."
+        )
+    if last_rep.raw_output and last_rep.raw_output.strip() == "12 passed in 0.08s":
+        raise ValueError("Cannot open PR: Test execution contains synthetic mock output.")
+
+    gate_passed, reason = evaluate_done_gate(state, workspace, is_mock_test=False)
+    if not gate_passed:
+        raise ValueError(f"Cannot open PR: DONE gate conditions not satisfied: {reason}")
+
+    if state.pr and state.pr.url and state.pr.pull_number and "github.com" in state.pr.url:
+        logger.info(
+            "PR already exists for run '%s' at %s (#%s)",
+            state.run_id,
+            state.pr.url,
+            state.pr.pull_number,
+        )
+        return state.pr
+
     owner, repo = resolve_owner_repo(state.repo_url)
     ws = Path(workspace).resolve()
     changed_files = get_workspace_disk_diff_files(ws)
@@ -271,17 +322,20 @@ async def _async_open_and_verify_pr(
 
     # Step 2: Create target branch from main
     branch_name = f"repoagent/{state.run_id}"
-    await call_tool_direct(
-        params,
-        "create_branch",
-        {
-            "owner": owner,
-            "repo": repo,
-            "branch": branch_name,
-            "from_branch": base_branch,
-        },
-    )
-    logger.info("Created remote branch '%s' on %s/%s", branch_name, owner, repo)
+    try:
+        await call_tool_direct(
+            params,
+            "create_branch",
+            {
+                "owner": owner,
+                "repo": repo,
+                "branch": branch_name,
+                "from_branch": base_branch,
+            },
+        )
+        logger.info("Created remote branch '%s' on %s/%s", branch_name, owner, repo)
+    except Exception as exc:
+        logger.info("Branch '%s' already exists or creation skipped: %s", branch_name, exc)
 
     # Step 3: Push changed files in a single atomic commit
     files_payload: list[dict[str, str]] = []
@@ -352,16 +406,24 @@ async def _async_open_and_verify_pr(
         msg = f"PR verification failed: PR head branch is '{head_ref}', expected '{branch_name}'"
         raise RuntimeError(msg)
 
-    files_list_raw = await call_tool_direct(
-        params,
-        "get_pull_request_files",
-        {
-            "owner": owner,
-            "repo": repo,
-            "pull_number": pull_number,
-        },
-    )
-    files_list = json.loads(files_list_raw) if isinstance(files_list_raw, str) else files_list_raw
+    # Plausible changes check & file list verification with retry
+    files_list: list[dict[str, Any]] = []
+    for _ in range(3):
+        files_list_raw = await call_tool_direct(
+            params,
+            "get_pull_request_files",
+            {
+                "owner": owner,
+                "repo": repo,
+                "pull_number": pull_number,
+            },
+        )
+        files_list = (
+            json.loads(files_list_raw) if isinstance(files_list_raw, str) else files_list_raw
+        )
+        if files_list:
+            break
+        await asyncio.sleep(1.0)
 
     pr_file_names = [f["filename"] for f in files_list]
     # Normalize both file lists to compare relative paths
@@ -396,8 +458,55 @@ def open_and_verify_pull_request(
     state: RunState,
     workspace: Path,
     base_branch: str = "main",
+    is_live_execution: bool = True,
 ) -> PRSummary:
     """Synchronous entry point for PR creation and verification, supporting nested loops."""
+    if is_live_execution is False:
+        raise ValueError(
+            "Cannot open PR: Offline or fallback execution cannot authorize real PR promotion."
+        )
+
+    # 1. Authoritative gate check: NEVER allow PR creation if run is in
+    # needs_human, blocked, or failed
+    if state.status != RunStatus.DONE:
+        raise ValueError(
+            f"Cannot open PR: Run status is '{state.status.value}'. "
+            "PR creation is forbidden for runs not in DONE status."
+        )
+
+    review_prov = getattr(state.review, "provenance", None) if state.review else None
+    if review_prov != "authoritative_adk_reviewer":
+        raise ValueError(
+            f"Cannot open PR: Review provenance is not authoritative ('{review_prov}')."
+        )
+    if state.review and "fallback" in state.review.summary.lower():
+        raise ValueError("Cannot open PR: Review verdict is from a fallback offline stub.")
+
+    if not state.test_reports:
+        raise ValueError("Cannot open PR: Missing test reports.")
+
+    last_rep = state.test_reports[-1]
+    test_prov = getattr(last_rep, "provenance", None)
+    if test_prov != "authoritative_docker_sandbox":
+        raise ValueError(
+            f"Cannot open PR: Test execution provenance is not authoritative ('{test_prov}')."
+        )
+    if last_rep.raw_output and last_rep.raw_output.strip() == "12 passed in 0.08s":
+        raise ValueError("Cannot open PR: Test execution contains synthetic mock output.")
+
+    gate_passed, reason = evaluate_done_gate(state, workspace, is_mock_test=False)
+    if not gate_passed:
+        raise ValueError(f"Cannot open PR: DONE gate conditions not satisfied: {reason}")
+
+    if state.pr and state.pr.url and state.pr.pull_number and "github.com" in state.pr.url:
+        logger.info(
+            "PR already exists for run '%s' at %s (#%s)",
+            state.run_id,
+            state.pr.url,
+            state.pr.pull_number,
+        )
+        return state.pr
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -408,10 +517,201 @@ def open_and_verify_pull_request(
 
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(
-                asyncio.run, _async_open_and_verify_pr(state, workspace, base_branch)
+                asyncio.run,
+                _async_open_and_verify_pr(
+                    state, workspace, base_branch, is_live_execution=is_live_execution
+                ),
             )
             return future.result()
-    return asyncio.run(_async_open_and_verify_pr(state, workspace, base_branch))
+    return asyncio.run(
+        _async_open_and_verify_pr(
+            state, workspace, base_branch, is_live_execution=is_live_execution
+        )
+    )
+
+
+def load_authoritative_run_state(run_dir: Path) -> RunState:
+    """Load and verify consistent RunState from a run directory.
+
+    Deterministic consistency policy:
+    - Both report.json and run_state.json must exist in run_dir.
+    - Both must parse cleanly into valid RunState models.
+    - Core fields must match exactly: run_id, requirement, is_replay, status,
+      test_reports count, and review verdict.
+    - Any mismatch, corruption, or missing file raises ValueError or FileNotFoundError.
+    """
+    r_dir = Path(run_dir).resolve()
+    report_file = r_dir / "report.json"
+    checkpoint_file = r_dir / "run_state.json"
+
+    if not report_file.is_file() and not checkpoint_file.is_file():
+        raise FileNotFoundError(f"No run state or report found in {r_dir}")
+
+    if not report_file.is_file() or not checkpoint_file.is_file():
+        raise ValueError(
+            f"State integrity check failed in {r_dir}: both report.json and run_state.json "
+            "must exist for an authoritative completed run."
+        )
+
+    try:
+        data_rep = json.loads(report_file.read_text(encoding="utf-8"))
+        state_report = RunState.model_validate(data_rep)
+    except Exception as exc:
+        raise ValueError(f"Corrupted or invalid report.json in {r_dir}: {exc}") from exc
+
+    try:
+        data_chk = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+        state_checkpoint = RunState.model_validate(data_chk)
+    except Exception as exc:
+        raise ValueError(f"Corrupted or invalid run_state.json in {r_dir}: {exc}") from exc
+
+    mismatches: list[str] = []
+    if state_report.run_id != state_checkpoint.run_id:
+        mismatches.append(f"run_id mismatch: {state_report.run_id} vs {state_checkpoint.run_id}")
+    if state_report.requirement != state_checkpoint.requirement:
+        mismatches.append(
+            f"requirement mismatch: {state_report.requirement} vs {state_checkpoint.requirement}"
+        )
+    if state_report.is_replay != state_checkpoint.is_replay:
+        mismatches.append(
+            f"is_replay mismatch: {state_report.is_replay} vs {state_checkpoint.is_replay}"
+        )
+    if state_report.status != state_checkpoint.status:
+        mismatches.append(f"status mismatch: {state_report.status} vs {state_checkpoint.status}")
+    if len(state_report.test_reports) != len(state_checkpoint.test_reports):
+        mismatches.append(
+            f"test_reports count mismatch: {len(state_report.test_reports)} vs "
+            f"{len(state_checkpoint.test_reports)}"
+        )
+    rep_verdict = state_report.review.verdict if state_report.review else None
+    chk_verdict = state_checkpoint.review.verdict if state_checkpoint.review else None
+    if rep_verdict != chk_verdict:
+        mismatches.append(f"review verdict mismatch: {rep_verdict} vs {chk_verdict}")
+
+    if mismatches:
+        raise ValueError(
+            f"State integrity check failed in {r_dir}: conflicting state files. "
+            f"Mismatches: {'; '.join(mismatches)}"
+        )
+
+    return state_report
+
+
+def promote_existing_run(
+    run_id: str,
+    runs_dir: Path | None = None,
+    live_pr: bool = False,
+) -> RunState:
+    """Safely promote a completed successful run's workspace to a Pull Request.
+
+    Enforces strict safety invariants:
+    1. Run ID format and path traversal validation.
+    2. Authoritative state consistency between report.json and run_state.json.
+    3. Workspace containment within runs/<run_id>/workspace.
+    4. Target repository linkage and baseline commit verification.
+    5. Re-evaluates full DONE gate (reusing evaluate_done_gate).
+    6. Rejects runs with status needs_human, failed, or running.
+    7. PR idempotency: never duplicates an already existing PR.
+    8. Strict push scoping: diff contains only allowed workspace feature files.
+    """
+    if not run_id or not re.match(r"^[A-Za-z0-9_-]+$", run_id):
+        raise ValueError(
+            f"Invalid run_id '{run_id}'. Must be alphanumeric with hyphens or underscores."
+        )
+
+    base_runs = (runs_dir or get_runs_dir()).resolve()
+    run_dir = (base_runs / run_id).resolve()
+
+    try:
+        run_dir.relative_to(base_runs)
+    except ValueError as exc:
+        raise ValueError(f"Path traversal detected: '{run_id}' escapes runs directory.") from exc
+
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run directory not found: {run_dir}")
+
+    # 1. State integrity check (deterministic consistency policy)
+    state = load_authoritative_run_state(run_dir)
+    if state.run_id != run_id:
+        raise ValueError(
+            f"State run_id '{state.run_id}' does not match requested run_id '{run_id}'."
+        )
+
+    # 2. Status check: never promote needs_human or failed runs
+    if state.status != RunStatus.DONE:
+        raise ValueError(
+            f"Cannot promote run '{run_id}': run status is '{state.status.value}'. "
+            "Only runs that completed with status 'done' can be promoted to a PR."
+        )
+
+    # 3. Workspace containment and git baseline verification
+    workspace = (run_dir / "workspace").resolve()
+    try:
+        workspace.relative_to(run_dir)
+    except ValueError as exc:
+        raise ValueError(f"Workspace path escapes run directory: {workspace}") from exc
+
+    if not workspace.is_dir() or not (workspace / ".git").is_dir():
+        raise FileNotFoundError(f"Isolated workspace missing or not a git repository: {workspace}")
+
+    log_proc = subprocess.run(
+        ["git", "log", "--pretty=%B"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_text = log_proc.stdout or ""
+    if "baseline repo state" not in log_text and "baseline demo_repo state" not in log_text:
+        raise ValueError(
+            f"Workspace in {workspace} does not have the expected RepoAgent baseline commit."
+        )
+
+    # 4. Strict push scoping: only allowed feature files
+    changed_files = get_workspace_disk_diff_files(workspace)
+    if not changed_files:
+        raise ValueError(f"Workspace in {workspace} contains no modified feature files.")
+
+    for path in changed_files:
+        if not (path.startswith("src/notes_app/") or path.startswith("tests/")):
+            raise ValueError(f"Workspace contains changes outside allowed feature paths: '{path}'.")
+
+    # 5. Full DONE Gate evaluation (reusing evaluate_done_gate from done_gate.py)
+    from repoagent.done_gate import evaluate_done_gate
+
+    gate_passed, reason = evaluate_done_gate(state, workspace, is_mock_test=False)
+    if not gate_passed:
+        raise ValueError(f"DONE gate validation failed for run '{run_id}': {reason}")
+
+    # 6. PR Idempotency: never duplicate an existing PR
+    if state.pr and state.pr.url and state.pr.pull_number and "github.com" in state.pr.url:
+        logger.info(
+            "PR already exists for run '%s' at %s (#%s)",
+            run_id,
+            state.pr.url,
+            state.pr.pull_number,
+        )
+        pr_msg = f"[IDEMPOTENT] PR already exists for '{run_id}': {state.pr.url}"
+        print(pr_msg)
+        return state
+
+    # 7. PR creation or offline verification
+    if live_pr:
+        pr_summary = open_and_verify_pull_request(state=state, workspace=workspace)
+        state.pr = pr_summary
+    else:
+        title, body = build_deterministic_pr_content(state, list(changed_files.keys()))
+        state.pr = PRSummary(
+            title=title,
+            body_markdown=body,
+            url=f"https://github.com/offline-test/repo/pull/{state.run_id[:6]}",
+            branch=state.branch or f"repoagent/{state.run_id}",
+        )
+
+    # 8. Update run reports with the new PR details
+    write_run_reports(run_dir, state)
+    (run_dir / "run_state.json").write_text(state.model_dump_json(indent=2), encoding="utf-8")
+    return state
 
 
 def generate_report_markdown(state: RunState) -> str:

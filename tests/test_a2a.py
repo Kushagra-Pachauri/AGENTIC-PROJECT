@@ -54,21 +54,28 @@ class TestA2AAgentCards:
         assert card.supported_interfaces[0].protocol_version == "1.0"
 
     def test_fetch_agent_cards_over_http(self) -> None:
-        p_app = create_planner_app(port=8001, workspace="demo_repo")
-        with TestClient(p_app) as client:
-            resp = client.get("/.well-known/agent-card.json")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["name"] == "repo-planner"
-            assert any(s["id"] == "analyze_repo" for s in data["skills"])
+        import concurrent.futures
 
-        r_app = create_reviewer_app(port=8002)
-        with TestClient(r_app) as client:
-            resp = client.get("/.well-known/agent-card.json")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["name"] == "code-reviewer"
-            assert any(s["id"] == "review_diff" for s in data["skills"])
+        def _run() -> None:
+            p_app = create_planner_app(port=8001, workspace="demo_repo")
+            with TestClient(p_app) as client:
+                resp = client.get("/.well-known/agent-card.json")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["name"] == "repo-planner"
+                assert any(s["id"] == "analyze_repo" for s in data["skills"])
+
+            r_app = create_reviewer_app(port=8002)
+            with TestClient(r_app) as client:
+                resp = client.get("/.well-known/agent-card.json")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["name"] == "code-reviewer"
+                assert any(s["id"] == "review_diff" for s in data["skills"])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            future.result(timeout=15.0)
 
 
 class TestA2AClient:

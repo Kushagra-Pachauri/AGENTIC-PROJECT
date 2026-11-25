@@ -107,6 +107,17 @@ class TestReport(BaseModel):
         default="",
         description="Raw output from the sandbox runner",
     )
+    provenance: str | None = Field(
+        default=None,
+        description=(
+            "Execution provenance (e.g. authoritative_docker_sandbox, "
+            "direct_pytest, offline_fallback, synthetic_mock)"
+        ),
+    )
+    execution_timestamp: str | None = Field(
+        default=None,
+        description="Timestamp of test execution",
+    )
 
 
 class ReviewFinding(BaseModel):
@@ -126,6 +137,10 @@ class ReviewReport(BaseModel):
     verdict: ReviewVerdict
     findings: list[ReviewFinding] = Field(default_factory=list)
     summary: str = Field(default="")
+    provenance: str | None = Field(
+        default=None,
+        description="Review provenance (e.g. authoritative_adk_reviewer, fallback, mock)",
+    )
 
 
 class PRSummary(BaseModel):
@@ -186,6 +201,11 @@ class RunState(BaseModel):
     )
     replay_label: str = Field(
         default="", description="Label indicating origin of changes in replay mode"
+    )
+
+    # Execution mode tracking
+    is_live_execution: bool = Field(
+        default=False, description="Whether this run was executed with live LLM agents"
     )
 
     # Status tracking

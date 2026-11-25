@@ -96,7 +96,7 @@ def setup_workspace(source: Path, target: Path) -> Path:
     )
     subprocess.run(["git", "add", "."], cwd=str(target), check=True, capture_output=True)
     subprocess.run(
-        ["git", "commit", "-m", "baseline demo_repo state"],
+        ["git", "commit", "-m", "baseline repo state"],
         cwd=str(target),
         check=True,
         capture_output=True,
@@ -369,6 +369,17 @@ def run_coding_loop(
     provider = get_provider()
     print(f"\nEffective Model:    {provider.model_name} (Provider: {provider.provider_name})")
 
+    from repoagent.flow import REGISTERED_REPLAY_BENCHMARKS
+
+    if replay and requirement not in REGISTERED_REPLAY_BENCHMARKS:
+        msg = (
+            f"REPLAY mode rejected: requirement '{requirement}' is not a registered "
+            "reference replay benchmark. REPLAY mode is strictly reserved for "
+            "pre-recorded reference solutions. For custom features, run in live mode."
+        )
+        print(f"\n[ERROR] {msg}", file=sys.stderr)
+        raise ValueError(msg)
+
     # Step 1: Prepare workspace and git baseline
     setup_workspace(source_repo.resolve(), workspace)
 
@@ -434,7 +445,7 @@ def run_coding_loop(
             print(f"Changes Summary:    {flow.state.changes.summary}")
             print(f"Files Modified:     {[f.path for f in flow.state.changes.files]}")
 
-        if flow.state.pr:
+        if flow.state.status == RunStatus.DONE and flow.state.pr:
             print(f"PR Generated:       {flow.state.pr.title} on {flow.state.pr.branch}")
 
         # Check git diff of the workspace clone (including untracked files via git add -N)

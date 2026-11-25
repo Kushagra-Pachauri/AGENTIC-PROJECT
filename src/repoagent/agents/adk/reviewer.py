@@ -12,6 +12,7 @@ from typing import Any
 from a2a.types import AgentCard, AgentInterface, AgentSkill
 from google.adk.agents import Agent
 
+from repoagent.monitoring import attach_adk_callbacks
 from repoagent.providers import get_provider
 from repoagent.schemas import ReviewReport
 
@@ -49,6 +50,7 @@ def get_reviewer_agent_card(rpc_url: str = "http://localhost:8002/") -> AgentCar
 
 def create_reviewer_agent(
     model: Any | None = None,
+    run_id: str | None = None,
 ) -> Agent:
     """Create and configure the Google ADK Code Reviewer agent."""
     if model is None:
@@ -83,7 +85,7 @@ def create_reviewer_agent(
         '      "message": "Description of the finding"\n'
         "    }\n"
         "  ],\n"
-        '  "summary": "Overall evaluation summary"\n'
+        '  "summary": "Concise evaluation summary in 1-2 sentences. Do not repeat code or test output."\n'
         "}"
     )
 
@@ -95,4 +97,5 @@ def create_reviewer_agent(
         tools=[],
         output_schema=ReviewReport,
     )
+    attach_adk_callbacks(agent, run_id=run_id, agent_name="code_reviewer", stage="review")
     return agent

@@ -66,9 +66,25 @@ class TestRepoReader:
         assert "not a file" in result
 
     def test_read_file_truncation(self) -> None:
-        content = repo_reader.read_file("src/notes_app/models.py", max_lines=5)
+        content = repo_reader.read_file("src/notes_app/models.py", limit=5)
         assert len(content.splitlines()) <= 7  # 5 lines + truncation marker
         assert "truncated" in content
+
+    def test_read_file_with_offset_and_limit(self) -> None:
+        all_lines = repo_reader.read_file("src/notes_app/models.py", limit=100).splitlines()
+        sliced = repo_reader.read_file("src/notes_app/models.py", offset=2, limit=3).splitlines()
+        # Sliced content should match lines 2..4 of the full content
+        assert sliced[0] == all_lines[2]
+        assert len(sliced) >= 3
+
+    def test_read_file_offset_beyond_eof(self) -> None:
+        result = repo_reader.read_file("src/notes_app/models.py", offset=99999, limit=10)
+        assert "beyond end of file" in result
+
+    def test_read_file_rejects_line_start_and_line_end(self) -> None:
+        """read_file schema strictly enforces path, offset, limit; line_start/line_end must fail."""
+        with pytest.raises(TypeError):
+            repo_reader.read_file("src/notes_app/models.py", line_start=1, line_end=5)  # type: ignore[call-arg]
 
     def test_search_code_direct(self) -> None:
         results = repo_reader.search_code("class AuthService")
@@ -188,6 +204,7 @@ class TestTestRunner:
             "stderr": "",
             "duration_s": 0.5,
             "timed_out": False,
+            "executed_in_container": True,
         }
         report = test_runner._format_test_report("pytest", raw_result)
         assert isinstance(report, TestReport)
@@ -203,6 +220,7 @@ class TestTestRunner:
             "stderr": "",
             "duration_s": 0.8,
             "timed_out": False,
+            "executed_in_container": True,
         }
         report = test_runner._format_test_report("pytest", raw_result)
         assert isinstance(report, TestReport)
@@ -218,6 +236,7 @@ class TestTestRunner:
             "stderr": "",
             "duration_s": 10.0,
             "timed_out": True,
+            "executed_in_container": True,
         }
         report = test_runner._format_test_report("pytest", raw_result)
         assert isinstance(report, TestReport)
@@ -279,6 +298,7 @@ class TestMCPClient:
         assert "REPOAGENT_WORKSPACE" in params.env
 
     def test_github_params_missing_token_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
         with pytest.raises(EnvironmentError, match="GITHUB_TOKEN environment variable"):

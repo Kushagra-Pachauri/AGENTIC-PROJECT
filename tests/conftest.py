@@ -28,7 +28,18 @@ token_manager.TokenManager._get_secure_storage_path = staticmethod(_safe_storage
 settings.get_writable_config_path = lambda: _test_storage / "settings.json"
 paths.db_storage_path = lambda: str(_test_storage / "db")
 
+try:
+    from crewai.events.event_bus import crewai_event_bus
+
+    crewai_event_bus._ensure_executor_initialized = lambda: None
+    crewai_event_bus.emit = lambda *args, **kwargs: None
+except Exception:
+    pass
+
+import sys  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
+
+sys.modules.setdefault("lancedb", MagicMock())
 
 import crewai.memory.storage.lancedb_storage as lancedb_storage  # noqa: E402
 import crewai.memory.unified_memory as unified_memory  # noqa: E402

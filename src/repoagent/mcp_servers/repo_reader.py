@@ -66,6 +66,15 @@ def _resolve_safe(relative_path: str) -> Path:
         msg = f"Path traversal detected: {relative_path!r} resolves outside workspace."
         raise ValueError(msg) from None
 
+    # Check symlink escapes
+    real_target = Path(os.path.realpath(str(resolved)))
+    real_ws = Path(os.path.realpath(str(_WORKSPACE)))
+    try:
+        real_target.relative_to(real_ws)
+    except ValueError:
+        msg = f"Symlink escape detected: {relative_path!r} resolves outside workspace."
+        raise ValueError(msg) from None
+
     return resolved
 
 
@@ -121,10 +130,15 @@ def _walk(base: Path, current: Path, lines: list[str], depth: int, max_depth: in
 
 
 @mcp.tool()
-def read_file(path: str, max_lines: int = 500) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 200) -> str:
     """Read the contents of a text file (relative to workspace).
 
-    Returns at most *max_lines* lines. Binary files are rejected.
+    Args:
+        path: Path to the file relative to workspace root.
+        offset: 0-indexed line number to start reading from (default: 0).
+        limit: Maximum number of lines to return (default: 200).
+
+    Returns lines from offset to offset + limit. Binary files are rejected.
     """
     resolved = _resolve_safe(path)
     if not resolved.is_file():
@@ -136,13 +150,23 @@ def read_file(path: str, max_lines: int = 500) -> str:
         return f"Error reading {path}: {exc}"
 
     lines = text.splitlines(keepends=True)
-    if len(lines) > max_lines:
-        return "".join(lines[:max_lines]) + f"\n... (truncated at {max_lines} lines)"
-    return text
+    total_lines = len(lines)
+    if offset < 0:
+        offset = 0
+    if limit <= 0:
+        return ""
+    if offset >= total_lines:
+        return f"(empty: offset {offset} is beyond end of file with {total_lines} lines)"
+
+    selected_lines = lines[offset : offset + limit]
+    result = "".join(selected_lines)
+    if offset + len(selected_lines) < total_lines:
+        result += f"\n... (truncated: showing lines {offset + 1}-{offset + len(selected_lines)} of {total_lines})"
+    return result
 
 
 @mcp.tool()
-def search_code(pattern: str, path: str = ".", max_results: int = 50) -> str:
+def search_code(pattern: str, path: str = ".", max_results: int = 25) -> str:
     """Search for a regex *pattern* in files under *path* (relative to workspace).
 
     Returns matching lines as ``file:line_no: content``.
@@ -201,7 +225,19 @@ def write_file(path: str, content: str) -> str:
 
     Creates parent directories if necessary.
     Rejects path traversal and absolute paths outside the workspace.
+    Rejects writes to protected paths (.env, .github/workflows/, git metadata).
     """
+    from repoagent.security.tool_guardrails import GuardrailViolation, is_protected_path
+
+    is_prot, prot_reason = is_protected_path(path)
+    if is_prot:
+        raise GuardrailViolation(
+            f"Cannot write to protected path: {prot_reason}",
+            category="PROTECTED_PATH",
+            tool_name="write_file",
+            target_path=path,
+        )
+
     resolved = _resolve_safe(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")

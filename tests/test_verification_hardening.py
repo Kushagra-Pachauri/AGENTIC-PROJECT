@@ -409,12 +409,21 @@ class TestCorrectnessGatingDefects:
         assert flow4.state.status == RunStatus.NEEDS_HUMAN
 
         # Valid Case: Passing tests, modified isolated workspace, approved review, no errors
+        valid_report = TestReport(
+            command="pytest",
+            passed=True,
+            exit_code=0,
+            duration_s=1.0,
+            workspace_hash=compute_workspace_hash(ws),
+        )
         state5 = RunState(
             run_id="run_gating_5",
-            test_reports=[passing_report],
+            test_reports=[valid_report],
             review=approved_review,
         )
-        flow5 = RepoAgentFlow(initial_state=state5, workspace=ws, use_live_agents=False)
+        flow5 = RepoAgentFlow(
+            initial_state=state5, workspace=ws, use_live_agents=False, is_mock_test=True
+        )
         flow5.open_pr()
         assert flow5.state.status == RunStatus.DONE
 

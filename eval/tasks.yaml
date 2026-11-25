@@ -1,0 +1,490 @@
+# RepoAgent Evaluation Dataset: 15 Diverse Coding Tasks
+# Across 3 Difficulty Tiers (5 Easy, 5 Medium, 5 Hard)
+# Operating on isolated instances of the notes_app repository
+
+version: "1.0"
+repository: "notes_app"
+total_tasks: 15
+
+tasks:
+  # =========================================================================
+  # EASY TIER (5 Tasks)
+  # =========================================================================
+
+  - task_id: "TASK-01"
+    name: "Add count_notes utility method"
+    difficulty: "easy"
+    category: "Utility function"
+    requirement: "Add a count_notes(user_id: str) -> int method to NotesService in src/notes_app/notes.py that returns the total count of notes owned by the specified user_id, and expose it on NotesApp in src/notes_app/app.py as count_user_notes(username: str) -> int."
+    acceptance_criteria:
+      - "NotesService.count_notes(user_id) returns integer count of notes for that user."
+      - "Returns 0 if the user has no notes."
+      - "NotesApp.count_user_notes(username) returns integer count of notes for that registered user."
+      - "NotesApp.count_user_notes raises ValueError if the user does not exist."
+    expected_outcome: "count_notes implemented on NotesService and count_user_notes on NotesApp."
+    acceptance_test: |
+      import pytest
+      from notes_app.app import NotesApp
+      from notes_app.notes import NotesService
+
+      def test_count_notes_service():
+          service = NotesService()
+          assert service.count_notes("u1") == 0
+          service.create_note("u1", "T1", "C1")
+          service.create_note("u1", "T2", "C2")
+          service.create_note("u2", "T3", "C3")
+          assert service.count_notes("u1") == 2
+          assert service.count_notes("u2") == 1
+          assert service.count_notes("u3") == 0
+
+      def test_count_notes_app():
+          app = NotesApp()
+          app.register_user("alice", "alice@example.com", "pass123")
+          assert app.count_user_notes("alice") == 0
+          app.create_note("alice", "Note 1", "Content 1")
+          assert app.count_user_notes("alice") == 1
+          with pytest.raises(ValueError, match="not found"):
+              app.count_user_notes("nonexistent")
+
+  - task_id: "TASK-02"
+    name: "Validate email format on user registration"
+    difficulty: "easy"
+    category: "Validation logic"
+    requirement: "Update register method in src/notes_app/auth.py to validate that email contains an '@' symbol with at least one character before and after '@', and at least one '.' in the domain part. Raise ValueError('Invalid email format') if the email is invalid."
+    acceptance_criteria:
+      - "Valid emails like 'user@example.com' or 'a.b@domain.org' are accepted."
+      - "Emails missing '@', empty user part ('@domain.com'), empty domain ('user@'), or missing '.' in domain ('user@domain') raise ValueError('Invalid email format')."
+      - "Existing user registration functionality remains intact for valid emails."
+    expected_outcome: "Strict email validation in AuthService.register raising ValueError with message 'Invalid email format'."
+    acceptance_test: |
+      import pytest
+      from notes_app.auth import AuthService
+
+      def test_email_validation_valid():
+          auth = AuthService()
+          user = auth.register("alice", "alice@example.com", "pw123")
+          assert user.email == "alice@example.com"
+
+      def test_email_validation_invalid():
+          auth = AuthService()
+          for bad_email in ["notanemail", "@domain.com", "user@", "user@domain", "user@.com"]:
+              with pytest.raises(ValueError, match="Invalid email format"):
+                  auth.register(f"user_{bad_email[:3]}", bad_email, "pw123")
+
+  - task_id: "TASK-03"
+    name: "Add tags support to Note data model"
+    difficulty: "easy"
+    category: "Data model update"
+    requirement: "Update the Note model in src/notes_app/models.py to include an optional tags field of type list[str] defaulting to an empty list. Update NotesService.create_note in src/notes_app/notes.py to accept an optional tags parameter (tags: list[str] | None = None)."
+    acceptance_criteria:
+      - "Note instances default to tags=[] when tags are not provided."
+      - "Notes created with tags=['work', 'urgent'] store the list correctly."
+      - "create_note with tags=None results in tags=[]."
+    expected_outcome: "Note model has tags: list[str] = Field(default_factory=list) and create_note accepts tags."
+    acceptance_test: |
+      from notes_app.models import Note
+      from notes_app.notes import NotesService
+
+      def test_note_tags_model():
+          n1 = Note(user_id="u1", title="T", content="C")
+          assert n1.tags == []
+          n2 = Note(user_id="u1", title="T", content="C", tags=["work", "personal"])
+          assert n2.tags == ["work", "personal"]
+
+      def test_note_tags_service():
+          svc = NotesService()
+          note = svc.create_note("u1", "Title", "Content", tags=["dev", "ai"])
+          assert note.tags == ["dev", "ai"]
+          note2 = svc.create_note("u1", "Title2", "Content2")
+          assert note2.tags == []
+
+  - task_id: "TASK-04"
+    name: "Disallow empty or whitespace-only note titles"
+    difficulty: "easy"
+    category: "Edge case handling"
+    requirement: "Modify create_note in src/notes_app/notes.py to validate that title is not empty or whitespace-only after stripping. If title is empty, raise ValueError('Note title cannot be empty')."
+    acceptance_criteria:
+      - "create_note with '' raises ValueError('Note title cannot be empty')."
+      - "create_note with '   ' raises ValueError('Note title cannot be empty')."
+      - "create_note with valid non-empty string succeeds."
+    expected_outcome: "Title validation check in NotesService.create_note raising ValueError."
+    acceptance_test: |
+      import pytest
+      from notes_app.notes import NotesService
+
+      def test_empty_title_rejection():
+          svc = NotesService()
+          with pytest.raises(ValueError, match="Note title cannot be empty"):
+              svc.create_note("u1", "", "Some content")
+          with pytest.raises(ValueError, match="Note title cannot be empty"):
+              svc.create_note("u1", "   \t\n  ", "Some content")
+          note = svc.create_note("u1", "Valid Title", "Some content")
+          assert note.title == "Valid Title"
+
+  - task_id: "TASK-05"
+    name: "Prevent password reuse on change_password"
+    difficulty: "easy"
+    category: "Error handling"
+    requirement: "Update change_password in src/notes_app/auth.py to verify that new_password is not identical to old_password. If old_password == new_password, raise ValueError('New password cannot be the same as old password')."
+    acceptance_criteria:
+      - "change_password with distinct old and new passwords succeeds."
+      - "change_password with old_password == new_password raises ValueError('New password cannot be the same as old password')."
+      - "Wrong old_password still raises ValueError('Invalid username or password')."
+    expected_outcome: "Same-password check in AuthService.change_password raising ValueError."
+    acceptance_test: |
+      import pytest
+      from notes_app.auth import AuthService
+
+      def test_prevent_password_reuse():
+          auth = AuthService()
+          auth.register("alice", "alice@example.com", "pass123")
+          with pytest.raises(ValueError, match="New password cannot be the same as old password"):
+              auth.change_password("alice", "pass123", "pass123")
+          assert auth.change_password("alice", "pass123", "newpass456") is True
+
+  # =========================================================================
+  # MEDIUM TIER (5 Tasks)
+  # =========================================================================
+
+  - task_id: "TASK-06"
+    name: "Case-insensitive note search by title or content"
+    difficulty: "medium"
+    category: "Adding a small feature"
+    requirement: "Add a search_notes(user_id: str, query: str) -> list[Note] method to NotesService in src/notes_app/notes.py. It should perform a case-insensitive substring search matching against either title or content for all notes belonging to the specified user_id. Also expose search_user_notes(username: str, query: str) -> list[Note] on NotesApp in src/notes_app/app.py."
+    acceptance_criteria:
+      - "NotesService.search_notes returns all notes where query appears in title or content (case-insensitive)."
+      - "Does not return notes owned by other users."
+      - "Empty query matches all notes owned by that user."
+      - "NotesApp.search_user_notes works with username lookup."
+    expected_outcome: "search_notes method on NotesService and search_user_notes on NotesApp."
+    acceptance_test: |
+      from notes_app.app import NotesApp
+      from notes_app.notes import NotesService
+
+      def test_search_notes():
+          svc = NotesService()
+          svc.create_note("u1", "Meeting Notes", "Discuss project roadmap")
+          svc.create_note("u1", "Shopping List", "Buy milk and apples")
+          svc.create_note("u2", "Meeting Agenda", "Roadmap discussion")
+
+          results = svc.search_notes("u1", "roadmap")
+          assert len(results) == 1
+          assert results[0].title == "Meeting Notes"
+
+          results_upper = svc.search_notes("u1", "MEETING")
+          assert len(results_upper) == 1
+
+          results_empty = svc.search_notes("u1", "")
+          assert len(results_empty) == 2
+
+      def test_search_notes_app():
+          app = NotesApp()
+          app.register_user("bob", "bob@example.com", "secret")
+          app.create_note("bob", "Doc 1", "Alpha Beta")
+          app.create_note("bob", "Doc 2", "Gamma Delta")
+          found = app.search_user_notes("bob", "alpha")
+          assert len(found) == 1
+          assert found[0].title == "Doc 1"
+
+  - task_id: "TASK-07"
+    name: "Fix inconsistent note deletion error handling"
+    difficulty: "medium"
+    category: "Fixing a reproducible bug"
+    requirement: "In src/notes_app/app.py, delete_note currently returns False when the note does not exist. Modify delete_note in NotesApp to raise KeyError(f'Note {note_id} not found') when note_id does not exist, while continuing to raise PermissionError when the note belongs to another user."
+    acceptance_criteria:
+      - "Deleting a non-existent note raises KeyError."
+      - "Deleting a note owned by another user still raises PermissionError."
+      - "Deleting own note returns True."
+    expected_outcome: "delete_note in NotesApp raises KeyError when note_id is not in notes service."
+    acceptance_test: |
+      import pytest
+      from notes_app.app import NotesApp
+
+      def test_delete_note_error_handling():
+          app = NotesApp()
+          app.register_user("alice", "alice@example.com", "pw1")
+          app.register_user("bob", "bob@example.com", "pw2")
+
+          note = app.create_note("alice", "Alice Note", "Body")
+
+          # 1. Non-existent note raises KeyError
+          with pytest.raises(KeyError, match="not found"):
+              app.delete_note("alice", "nonexistent-uuid")
+
+          # 2. Other user deleting note raises PermissionError
+          with pytest.raises(PermissionError):
+              app.delete_note("bob", note.id)
+
+          # 3. Owner deleting note succeeds
+          assert app.delete_note("alice", note.id) is True
+
+  - task_id: "TASK-08"
+    name: "Add pagination support to list_notes"
+    difficulty: "medium"
+    category: "Modifying an API endpoint"
+    requirement: "Add a list_notes_paginated(user_id: str, offset: int = 0, limit: int = 10) -> list[Note] method to NotesService in src/notes_app/notes.py. It should return notes owned by user_id, sorted by created_at descending (newest first), sliced by [offset:offset+limit]. Also validate that offset >= 0 and limit >= 1, raising ValueError if invalid."
+    acceptance_criteria:
+      - "Returns notes sorted newest first (created_at desc)."
+      - "Respects offset and limit parameters."
+      - "Raises ValueError for offset < 0 or limit < 1."
+    expected_outcome: "list_notes_paginated method on NotesService with validation and sorting."
+    acceptance_test: |
+      import time
+      import pytest
+      from notes_app.notes import NotesService
+
+      def test_pagination():
+          svc = NotesService()
+          for i in range(5):
+              svc.create_note("u1", f"Note {i}", f"Content {i}")
+              time.sleep(0.01)
+
+          page1 = svc.list_notes_paginated("u1", offset=0, limit=2)
+          assert len(page1) == 2
+          assert page1[0].title == "Note 4"
+          assert page1[1].title == "Note 3"
+
+          page2 = svc.list_notes_paginated("u1", offset=2, limit=2)
+          assert len(page2) == 2
+          assert page2[0].title == "Note 2"
+
+          with pytest.raises(ValueError):
+              svc.list_notes_paginated("u1", offset=-1, limit=5)
+          with pytest.raises(ValueError):
+              svc.list_notes_paginated("u1", offset=0, limit=0)
+
+  - task_id: "TASK-09"
+    name: "Add update_email feature with format validation"
+    difficulty: "medium"
+    category: "Updating validation logic"
+    requirement: "Implement update_email(username: str, new_email: str) -> User on AuthService in src/notes_app/auth.py and expose it on NotesApp in src/notes_app/app.py. Validate that new_email is a valid email (contains '@' and '.'), raises ValueError('Invalid email format') if invalid, and raises ValueError(f'User {username} not found') if the user does not exist."
+    acceptance_criteria:
+      - "Successfully updates user email and returns updated User model."
+      - "Raises ValueError for invalid email format."
+      - "Raises ValueError if user is not found."
+    expected_outcome: "update_email method on AuthService and NotesApp."
+    acceptance_test: |
+      import pytest
+      from notes_app.app import NotesApp
+
+      def test_update_email():
+          app = NotesApp()
+          app.register_user("alice", "alice@old.com", "pass123")
+          updated = app.auth.update_email("alice", "alice@new.org")
+          assert updated.email == "alice@new.org"
+          assert app.auth.get_user("alice").email == "alice@new.org"
+
+          with pytest.raises(ValueError, match="Invalid email format"):
+              app.auth.update_email("alice", "bad-email")
+
+          with pytest.raises(ValueError, match="not found"):
+              app.auth.update_email("ghost", "ghost@example.com")
+
+  - task_id: "TASK-10"
+    name: "Add regression tests for note edge cases"
+    difficulty: "medium"
+    category: "Adding or improving tests"
+    requirement: "Create a new test file tests/test_note_edge_cases.py containing thorough tests for NotesService: testing extremely long note content (> 50,000 characters), note titles with unicode/emojis (e.g. '📝 Project Plan 🚀'), special characters in title and content, and verify that updating a non-existent note raises KeyError."
+    acceptance_criteria:
+      - "File tests/test_note_edge_cases.py exists."
+      - "Includes tests for large payload content, emoji titles, special chars, and KeyError on missing update."
+      - "All tests in the new file pass cleanly."
+    expected_outcome: "New test file tests/test_note_edge_cases.py with at least 3 test functions."
+    acceptance_test: |
+      from pathlib import Path
+      import subprocess
+      import sys
+
+      def test_edge_case_tests_exist_and_pass():
+          test_file = Path("tests/test_note_edge_cases.py")
+          assert test_file.is_file(), "tests/test_note_edge_cases.py must exist"
+          content = test_file.read_text(encoding="utf-8")
+          assert "def test_" in content
+          res = subprocess.run([sys.executable, "-m", "pytest", str(test_file), "-v"], capture_output=True, text=True)
+          assert res.returncode == 0, f"Tests failed: {res.stdout}\n{res.stderr}"
+
+  # =========================================================================
+  # HARD TIER (5 Tasks)
+  # =========================================================================
+
+  - task_id: "TASK-11"
+    name: "Implement Note archiving and restoration workflow"
+    difficulty: "hard"
+    category: "Adding a small feature"
+    requirement: "Add is_archived: bool = False and archived_at: datetime | None = None to the Note model in src/notes_app/models.py. In src/notes_app/notes.py, add archive_note(note_id: str) -> Note and restore_note(note_id: str) -> Note (both raising KeyError if note not found). Update list_notes(user_id: str, include_archived: bool = False) to exclude archived notes by default. Update NotesApp to expose archive_user_note and list_user_notes with archive support."
+    acceptance_criteria:
+      - "Note model includes is_archived and archived_at fields."
+      - "archive_note sets is_archived=True and archived_at to current UTC datetime."
+      - "restore_note sets is_archived=False and archived_at=None."
+      - "list_notes filters out archived notes unless include_archived=True."
+      - "KeyError raised if note_id does not exist."
+    expected_outcome: "Archiving lifecycle methods on NotesService and NotesApp."
+    acceptance_test: |
+      import pytest
+      from notes_app.notes import NotesService
+
+      def test_archive_workflow():
+          svc = NotesService()
+          n1 = svc.create_note("u1", "Active Note", "Content 1")
+          n2 = svc.create_note("u1", "To Archive", "Content 2")
+
+          assert len(svc.list_notes("u1")) == 2
+
+          archived = svc.archive_note(n2.id)
+          assert archived.is_archived is True
+          assert archived.archived_at is not None
+
+          # Excluded by default
+          active = svc.list_notes("u1")
+          assert len(active) == 1
+          assert active[0].id == n1.id
+
+          # Included when requested
+          all_notes = svc.list_notes("u1", include_archived=True)
+          assert len(all_notes) == 2
+
+          # Restore
+          restored = svc.restore_note(n2.id)
+          assert restored.is_archived is False
+          assert restored.archived_at is None
+          assert len(svc.list_notes("u1")) == 2
+
+          with pytest.raises(KeyError):
+              svc.archive_note("nonexistent")
+
+  - task_id: "TASK-12"
+    name: "Password strength policy and salt-based hashing"
+    difficulty: "hard"
+    category: "Refactoring a small component"
+    requirement: "Harden authentication in src/notes_app/auth.py: 1. Add validate_password_strength(password: str) -> bool that requires at least 8 characters, at least one uppercase letter, one lowercase letter, and one digit, raising ValueError('Password does not meet complexity requirements') if not met. 2. Enforce this check in register and change_password. 3. Upgrade _hash_password to use a salt prefix (e.g. 'salt:' + sha256) while maintaining verification support."
+    acceptance_criteria:
+      - "Passwords shorter than 8 chars or missing upper/lower/digit raise ValueError('Password does not meet complexity requirements')."
+      - "Valid strong passwords like 'SecureP@ss1' are accepted."
+      - "Registration and login succeed with strong passwords."
+    expected_outcome: "AuthService with password complexity policy and secure hashing."
+    acceptance_test: |
+      import pytest
+      from notes_app.auth import AuthService
+
+      def test_password_policy():
+          auth = AuthService()
+          weak_passwords = ["short1A", "nouppercase1", "NOLOWERCASE1", "NoDigitsHere"]
+          for wp in weak_passwords:
+              with pytest.raises(ValueError, match="Password does not meet complexity requirements"):
+                  auth.register(f"u_{wp[:4]}", "u@example.com", wp)
+
+          user = auth.register("stronguser", "strong@example.com", "Str0ngP@ssword")
+          assert auth.login("stronguser", "Str0ngP@ssword").id == user.id
+
+  - task_id: "TASK-13"
+    name: "Collaborative note sharing with permission control"
+    difficulty: "hard"
+    category: "Adding a small feature"
+    requirement: "Add shared_with: list[str] = Field(default_factory=list) to Note in src/notes_app/models.py (storing user IDs). In src/notes_app/app.py, implement share_note(owner_username: str, note_id: str, target_username: str) -> Note. In NotesApp.list_user_notes(username: str, include_shared: bool = False), include notes where user.id is in note.shared_with if include_shared is True. Ensure delete_note still allows deletion ONLY by the owner."
+    acceptance_criteria:
+      - "Owner can share note with target registered user."
+      - "Non-owner cannot share a note (raises PermissionError)."
+      - "Target user sees shared note when include_shared=True."
+      - "Shared user cannot delete the note (raises PermissionError)."
+    expected_outcome: "Note sharing mechanism with ownership vs collaborator permissions."
+    acceptance_test: |
+      import pytest
+      from notes_app.app import NotesApp
+
+      def test_note_sharing():
+          app = NotesApp()
+          alice = app.register_user("alice", "alice@example.com", "pw1")
+          bob = app.register_user("bob", "bob@example.com", "pw2")
+
+          note = app.create_note("alice", "Shared Project", "Project details")
+          app.share_note("alice", note.id, "bob")
+
+          # Bob cannot delete
+          with pytest.raises(PermissionError):
+              app.delete_note("bob", note.id)
+
+          # Bob can view when include_shared=True
+          bob_notes = app.list_user_notes("bob", include_shared=True)
+          assert len(bob_notes) == 1
+          assert bob_notes[0].id == note.id
+
+          # Bob does not see without include_shared
+          assert len(app.list_user_notes("bob", include_shared=False)) == 0
+
+  - task_id: "TASK-14"
+    name: "JSON export and import service for user notes"
+    difficulty: "hard"
+    category: "Modifying an API endpoint"
+    requirement: "Create src/notes_app/export.py with two functions: 1. export_user_notes_to_json(app: NotesApp, username: str) -> str returning a JSON string containing the user's notes with schema {'username': str, 'exported_at': str, 'notes': list[dict]}. 2. import_user_notes_from_json(app: NotesApp, username: str, json_str: str) -> int that parses JSON, validates schema, creates notes for the user, and returns the count of notes imported. If JSON is invalid or missing required keys, raise ValueError('Invalid export data format')."
+    acceptance_criteria:
+      - "export_user_notes_to_json produces valid JSON matching required structure."
+      - "import_user_notes_from_json parses exported JSON and recreates notes, returning count."
+      - "Invalid JSON raises ValueError('Invalid export data format')."
+    expected_outcome: "src/notes_app/export.py implementing export and import functions."
+    acceptance_test: |
+      import json
+      import pytest
+      from notes_app.app import NotesApp
+      from notes_app.export import export_user_notes_to_json, import_user_notes_from_json
+
+      def test_export_import_roundtrip():
+          app = NotesApp()
+          app.register_user("alice", "alice@example.com", "pass1")
+          app.register_user("bob", "bob@example.com", "pass2")
+
+          app.create_note("alice", "N1", "C1")
+          app.create_note("alice", "N2", "C2")
+
+          exported = export_user_notes_to_json(app, "alice")
+          data = json.loads(exported)
+          assert data["username"] == "alice"
+          assert len(data["notes"]) == 2
+
+          count = import_user_notes_from_json(app, "bob", exported)
+          assert count == 2
+          assert len(app.list_user_notes("bob")) == 2
+
+      def test_import_invalid_json():
+          app = NotesApp()
+          app.register_user("alice", "alice@example.com", "pass1")
+          with pytest.raises(ValueError, match="Invalid export data format"):
+              import_user_notes_from_json(app, "alice", "{bad json")
+          with pytest.raises(ValueError, match="Invalid export data format"):
+              import_user_notes_from_json(app, "alice", json.dumps({"invalid": "schema"}))
+
+  - task_id: "TASK-15"
+    name: "In-memory event dispatcher and activity hooks"
+    difficulty: "hard"
+    category: "Refactoring a small component"
+    requirement: "Create src/notes_app/events.py defining an EventBus with subscribe(event_type: str, callback) and emit(event_type: str, payload: dict). Integrate this EventBus into NotesApp in src/notes_app/app.py as app.events. When register_user is called, emit 'user_registered' with {'username': username}. When create_note is called, emit 'note_created' with {'username': username, 'note_id': note.id}. When delete_note is called, emit 'note_deleted' with {'username': username, 'note_id': note_id}."
+    acceptance_criteria:
+      - "EventBus allows subscribing callbacks to event types."
+      - "NotesApp.register_user emits 'user_registered'."
+      - "NotesApp.create_note emits 'note_created'."
+      - "NotesApp.delete_note emits 'note_deleted'."
+      - "Existing tests in demo_repo continue to pass without error."
+    expected_outcome: "src/notes_app/events.py and event dispatch integration in NotesApp."
+    acceptance_test: |
+      from notes_app.app import NotesApp
+      from notes_app.events import EventBus
+
+      def test_event_bus():
+          events_log = []
+          app = NotesApp()
+          app.events.subscribe("user_registered", lambda p: events_log.append(("reg", p)))
+          app.events.subscribe("note_created", lambda p: events_log.append(("create", p)))
+          app.events.subscribe("note_deleted", lambda p: events_log.append(("delete", p)))
+
+          app.register_user("charlie", "c@example.com", "p1")
+          assert len(events_log) == 1
+          assert events_log[0][0] == "reg"
+          assert events_log[0][1]["username"] == "charlie"
+
+          note = app.create_note("charlie", "Title", "Content")
+          assert len(events_log) == 2
+          assert events_log[1][0] == "create"
+          assert events_log[1][1]["note_id"] == note.id
+
+          app.delete_note("charlie", note.id)
+          assert len(events_log) == 3
+          assert events_log[2][0] == "delete"

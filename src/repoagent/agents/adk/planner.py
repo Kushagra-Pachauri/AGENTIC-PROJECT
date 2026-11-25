@@ -14,6 +14,7 @@ from a2a.types import AgentCard, AgentInterface, AgentSkill
 from google.adk.agents import Agent
 
 from repoagent.mcp_servers import repo_reader
+from repoagent.monitoring import attach_adk_callbacks
 from repoagent.providers import get_provider
 from repoagent.schemas import PlannerOutput
 
@@ -73,6 +74,7 @@ def get_planner_agent_card(rpc_url: str = "http://localhost:8001/") -> AgentCard
 def create_planner_agent(
     workspace: Path | str | None = None,
     model: Any | None = None,
+    run_id: str | None = None,
 ) -> Agent:
     """Create and configure the Google ADK Repo Analyst / Planner agent."""
     if workspace is not None:
@@ -94,6 +96,10 @@ def create_planner_agent(
         "   - steps: ordered list of implementation steps\n"
         "   - risks: key risks and considerations\n"
         "   - test_strategy: description of test verification\n\n"
+        "TOOL CALL INSTRUCTIONS:\n"
+        "When calling read tools (such as read_file or read_repository_file), use strictly: "
+        "'path' (string), 'offset' (int, default 0), and 'limit' (int, default 200). "
+        "NEVER use 'line_start' or 'line_end'.\n\n"
         "Output MUST be valid JSON adhering strictly to the PlannerOutput schema:\n"
         "{\n"
         '  "repo_map": "...",\n'
@@ -115,4 +121,5 @@ def create_planner_agent(
         tools=[],
         output_schema=PlannerOutput,
     )
+    attach_adk_callbacks(agent, run_id=run_id, agent_name="repo_planner", stage="analyze")
     return agent

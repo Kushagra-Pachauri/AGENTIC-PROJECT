@@ -12,6 +12,7 @@ Security constraints:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import time
@@ -32,6 +33,7 @@ ALLOWED_COMMANDS: set[str] = {"pytest", "ruff", "npm test", "eslint"}
 
 # Docker defaults (overridable via env)
 DEFAULT_IMAGE = "repoagent-sandbox:latest"
+DEFAULT_DOCKER_IMAGE = DEFAULT_IMAGE
 DEFAULT_TIMEOUT_S = 120
 DEFAULT_CPU_LIMIT = "1.0"
 DEFAULT_MEMORY_LIMIT = "512m"
@@ -52,39 +54,17 @@ def _validate_command(command: str) -> str:
     """Validate *command* against the allowlist.
 
     Returns the sanitised command string.
-    Raises ValueError for disallowed commands.
+    Raises ValueError or GuardrailViolation for disallowed commands.
     """
-    stripped = command.strip()
-    if not stripped:
-        msg = "Empty command"
-        raise ValueError(msg)
+    from repoagent.security.tool_guardrails import validate_command_allowlist
 
-    # Reject shell metacharacters that could escape or chain commands
-    if re.search(r"[;&|`$><\n\r]", stripped):
-        msg = f"Shell metacharacters not allowed in command: {stripped!r}"
-        raise ValueError(msg)
-
-    # Check that the command matches or starts with an allowed command prefix
-    is_allowed = False
-    for allowed in ALLOWED_COMMANDS:
-        if stripped == allowed or stripped.startswith(f"{allowed} "):
-            is_allowed = True
-            break
-
-    if not is_allowed:
-        msg = (
-            f"Command not allowed: {stripped!r}. "
-            f"Allowed prefixes: {', '.join(sorted(ALLOWED_COMMANDS))}"
-        )
-        raise ValueError(msg)
-
-    return stripped
+    return validate_command_allowlist(command)
 
 
 def _run_in_docker(command: str, timeout_s: int | None = None) -> dict[str, object]:
     """Run *command* inside the Docker sandbox container.
 
-    Returns dict with keys: exit_code, stdout, stderr, duration_s, timed_out.
+    Returns dict with keys: exit_code, stdout, stderr, duration_s, timed_out, executed_in_container.
     """
     import docker  # Import here so the module can be loaded without docker installed
 
@@ -97,60 +77,103 @@ def _run_in_docker(command: str, timeout_s: int | None = None) -> dict[str, obje
     cpu_limit = float(os.environ.get("SANDBOX_CPU_LIMIT", DEFAULT_CPU_LIMIT))
     memory_limit = os.environ.get("SANDBOX_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT)
 
-    client = docker.from_env()
-
     # Convert workspace path for Docker mount (handle Windows paths)
     workspace_str = str(_WORKSPACE)
-    # On Windows, Docker Desktop expects /c/Users/... style paths for bind mounts
-    # but the docker-py library handles this automatically when using the dict mount syntax.
+    volumes = {workspace_str: {"bind": "/workspace", "mode": "rw"}}
+    network_mode = "none"
+
+    # Enforce strict container sandbox restrictions and mount policy
+    from repoagent.security.tool_guardrails import validate_sandbox_mount_policy
+
+    validate_sandbox_mount_policy(
+        workspace=_WORKSPACE,
+        volumes=volumes,
+        network_mode=network_mode,
+    )
 
     start_time = time.monotonic()
     timed_out = False
+    container = None
+    executed_in_container = False
 
     try:
-        container = client.containers.run(
-            image=image,
-            command=["sh", "-c", command],
-            volumes={workspace_str: {"bind": "/workspace", "mode": "rw"}},
-            working_dir="/workspace",
-            network_mode="none",  # No network access
-            user="sandbox",
-            nano_cpus=int(cpu_limit * 1e9),  # CPU limit in nano-CPUs
-            mem_limit=memory_limit,
-            detach=True,
-            # Remove container after completion
-        )
+        try:
+            client = docker.from_env()
+        except Exception as exc:
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Docker initialization failed: {exc}",
+                "duration_s": 0.0,
+                "timed_out": False,
+                "executed_in_container": False,
+            }
 
         try:
-            result = container.wait(timeout=timeout)
-            exit_code = result.get("StatusCode", -1)
-        except Exception:
-            # Timeout or other error — kill the container
-            timed_out = True
-            container.kill()
-            exit_code = -1
+            container = client.containers.run(
+                image=image,
+                command=["sh", "-c", command],
+                volumes=volumes,
+                working_dir="/workspace",
+                network_mode=network_mode,  # No network access
+                user="sandbox",
+                nano_cpus=int(cpu_limit * 1e9),  # CPU limit in nano-CPUs
+                mem_limit=memory_limit,
+                detach=True,
+                # Remove container after completion
+            )
+            executed_in_container = True
+        except docker.errors.ImageNotFound:
+            err_msg = (
+                f"Docker image not found: {image}. Build with: docker build -t {image} sandbox/"
+            )
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": err_msg,
+                "duration_s": 0.0,
+                "timed_out": False,
+                "executed_in_container": False,
+            }
+        except Exception as exc:
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Docker container creation failed: {exc}",
+                "duration_s": 0.0,
+                "timed_out": False,
+                "executed_in_container": False,
+            }
 
-        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+        try:
+            try:
+                result = container.wait(timeout=timeout)
+                exit_code = result.get("StatusCode", -1)
+            except Exception:
+                # Timeout or other error — kill the container
+                timed_out = True
+                with contextlib.suppress(Exception):
+                    container.kill()
+                exit_code = -1
 
-        container.remove(force=True)
+            try:
+                stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+                stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            except Exception:
+                stdout = ""
+                stderr = "Failed to retrieve container logs."
+        finally:
+            with contextlib.suppress(Exception):
+                container.remove(force=True)
 
-    except docker.errors.ImageNotFound:
-        err_msg = f"Docker image not found: {image}. Build with: docker build -t {image} sandbox/"
-        return {
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": err_msg,
-            "duration_s": 0.0,
-            "timed_out": False,
-        }
-    except docker.errors.DockerException as exc:
+    except Exception as exc:
         return {
             "exit_code": -1,
             "stdout": "",
             "stderr": f"Docker error: {exc}",
             "duration_s": 0.0,
             "timed_out": False,
+            "executed_in_container": executed_in_container,
         }
 
     duration_s = time.monotonic() - start_time
@@ -161,6 +184,7 @@ def _run_in_docker(command: str, timeout_s: int | None = None) -> dict[str, obje
         "stderr": stderr,
         "duration_s": round(duration_s, 3),
         "timed_out": timed_out,
+        "executed_in_container": True,
     }
 
 
@@ -179,8 +203,11 @@ def _format_test_report(
     log_lines = combined_output.strip().splitlines()
     log_tail = "\n".join(log_lines[-30:]) if log_lines else ""
 
-    # Detect passed / failed
-    passed = exit_code == 0 and not timed_out
+    # Positive execution evidence: only explicit True qualifies as execution in container
+    executed_in_container = result.get("executed_in_container") is True
+
+    # Detect passed / failed: exit_code 0, not timed out, and confirmed in container
+    passed = exit_code == 0 and not timed_out and executed_in_container
 
     # Extract failed test names from pytest output
     failed_tests: list[str] = []
@@ -191,10 +218,22 @@ def _format_test_report(
             failed_tests.append(match.group(1))
 
     if not passed and not failed_tests:
-        failed_tests.append(f"{command.split()[0]}:exit_{exit_code}")
+        if not executed_in_container:
+            failed_tests.append(f"{command.split()[0]}:docker_startup_failure")
+        else:
+            failed_tests.append(f"{command.split()[0]}:exit_{exit_code}")
 
     if timed_out:
         log_tail = (log_tail + "\n[TIMEOUT] Command timed out and was killed.").strip()
+
+    from datetime import UTC, datetime
+
+    # Assign provenance: authoritative ONLY if test command actually ran in the container sandbox
+    if executed_in_container:
+        provenance = "authoritative_docker_sandbox"
+    else:
+        prov = str(result.get("provenance", "docker_startup_failure"))
+        provenance = prov if prov != "authoritative_docker_sandbox" else "docker_startup_failure"
 
     return TestReport(
         command=command,
@@ -204,6 +243,8 @@ def _format_test_report(
         log_tail=log_tail,
         duration_s=duration_s,
         raw_output=combined_output,
+        provenance=provenance,
+        execution_timestamp=datetime.now(UTC).isoformat(),
     )
 
 
@@ -235,13 +276,19 @@ def run_tests(command: str) -> TestReport:
         )
         compile_res = _run_in_docker(compile_cmd)
         if compile_res.get("exit_code", -1) != 0:
-            return _format_test_report("py_compile", compile_res)
+            cmd_label = validated if not compile_res.get("executed_in_container") else "py_compile"
+            return _format_test_report(cmd_label, compile_res)
 
         # 2. Ruff undefined names check (F821)
         ruff_cmd = "ruff check --no-cache --select F821 ."
         ruff_res = _run_in_docker(ruff_cmd)
         if ruff_res.get("exit_code", -1) != 0:
-            return _format_test_report("ruff check --select F821 .", ruff_res)
+            cmd_label = (
+                validated
+                if not ruff_res.get("executed_in_container")
+                else "ruff check --select F821 ."
+            )
+            return _format_test_report(cmd_label, ruff_res)
 
     result = _run_in_docker(validated)
     return _format_test_report(validated, result)

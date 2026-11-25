@@ -16,6 +16,9 @@ from repoagent.flow import RepoAgentFlow
 from repoagent.providers import get_provider
 from repoagent.schemas import RunState, RunStatus
 from repoagent.workspace_utils import get_runs_dir, setup_workspace
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,14 +36,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--requirement",
         type=str,
-        required=True,
-        help="Natural-language requirement to implement",
+        default=None,
+        help="Natural-language requirement to implement (required unless --from-run is specified)",
+    )
+    parser.add_argument(
+        "--from-run",
+        type=str,
+        default=None,
+        help="Promote an existing completed run's workspace to a Pull Request",
     )
     parser.add_argument(
         "--provider",
         type=str,
         default=None,
         help="LLM provider: 'gemini' or 'openai_compatible' (overrides REPOAGENT_PROVIDER)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LLM model name (overrides REPOAGENT_MODEL)",
     )
     parser.add_argument(
         "--max-retries",
@@ -92,9 +107,62 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Set provider if explicitly specified
+    # 1. Standalone promotion workflow
+    if args.from_run:
+        from repoagent.monitoring import EventType, get_event_logger
+        from repoagent.pr_agent import promote_existing_run
+
+        event_logger = get_event_logger()
+        event_logger.log_event(
+            run_id=args.from_run,
+            event_type=EventType.TASK_STARTED,
+            stage="promote",
+            input_summary={"from_run": args.from_run, "live_pr": args.create_pr},
+        )
+        try:
+            state = promote_existing_run(
+                run_id=args.from_run,
+                live_pr=args.create_pr,
+            )
+            event_logger.log_event(
+                run_id=args.from_run,
+                event_type=EventType.TASK_COMPLETED,
+                stage="promote",
+                output_summary={
+                    "status": state.status.value,
+                    "pr_url": state.pr.url if state.pr else None,
+                },
+            )
+            print(state.model_dump_json(indent=2))
+            return 0 if state.status == RunStatus.DONE else 1
+        except Exception as exc:
+            event_logger.log_event(
+                run_id=args.from_run,
+                event_type=EventType.ERROR,
+                stage="promote",
+                error_details=str(exc),
+            )
+            print(f"[ERROR] Failed to promote run '{args.from_run}': {exc}", file=sys.stderr)
+            return 1
+
+    if not args.requirement:
+        parser.error("--requirement is required unless --from-run is specified.")
+
+    if args.replay:
+        from repoagent.flow import REGISTERED_REPLAY_BENCHMARKS
+
+        if args.requirement not in REGISTERED_REPLAY_BENCHMARKS:
+            parser.error(
+                f"REPLAY mode rejected: requirement '{args.requirement}' does not match "
+                f"registered reference benchmark. REPLAY mode is strictly reserved for "
+                f"pre-recorded reference solutions. For custom requirements, omit --replay."
+            )
+
+    # Set provider and model if explicitly specified
     if args.provider:
         os.environ["REPOAGENT_PROVIDER"] = args.provider
+    if args.model:
+        os.environ["REPOAGENT_MODEL"] = args.model
 
     # Validate provider configuration
     _ = get_provider()

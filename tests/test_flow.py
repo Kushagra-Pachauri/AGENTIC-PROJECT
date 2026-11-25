@@ -7,6 +7,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from repoagent.flow import RepoAgentFlow
 from repoagent.run import main
 from repoagent.schemas import ReviewReport, ReviewVerdict, RunState, RunStatus, TestReport
@@ -21,7 +23,7 @@ class TestRepoAgentFlow:
             requirement="Add password-reset functionality",
             repo_url="demo_repo",
         )
-        flow = RepoAgentFlow(initial_state=initial_state)
+        flow = RepoAgentFlow(initial_state=initial_state, is_mock_test=True)
         result = flow.kickoff()
 
         assert result == "open_pr_completed"
@@ -76,7 +78,7 @@ class TestRepoAgentFlow:
             requirement="Implement custom auth token",
             repo_url="demo_repo",
         )
-        flow = RepoAgentFlow(initial_state=initial_state)
+        flow = RepoAgentFlow(initial_state=initial_state, is_mock_test=True)
         flow.kickoff()
 
         # Step 1: analyze set repo_map containing requirement and branch
@@ -106,7 +108,7 @@ class TestRepoAgentFlow:
     def test_branch_naming_invariant(self) -> None:
         """Verify work is performed strictly on repoagent/<run_id> and never on main."""
         initial_state = RunState(requirement="Security test")
-        flow = RepoAgentFlow(initial_state=initial_state)
+        flow = RepoAgentFlow(initial_state=initial_state, is_mock_test=True)
         flow.kickoff()
 
         assert flow.state.branch != "main"
@@ -114,8 +116,9 @@ class TestRepoAgentFlow:
         assert flow.state.branch.startswith("repoagent/")
         assert flow.state.run_id in flow.state.branch
 
-    def test_cli_execution(self) -> None:
+    def test_cli_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify CLI entry point runs the flow and outputs valid JSON."""
+        monkeypatch.setenv("REPOAGENT_MOCK_TEST", "1")
         stdout_capture = StringIO()
         test_args = ["--repo", "demo_repo", "--requirement", "Add password reset", "--stub"]
 

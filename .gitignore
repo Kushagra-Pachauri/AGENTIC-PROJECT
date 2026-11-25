@@ -49,3 +49,6 @@ crewai/
 sandbox/workspace/
 
 scratch/
+
+# Ruff cache
+.ruff_cache/

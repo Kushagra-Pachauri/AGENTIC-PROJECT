@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, Field
+
 from mcp.client.stdio import StdioServerParameters
 
 if TYPE_CHECKING:
@@ -97,6 +99,11 @@ def get_github_params() -> StdioServerParameters:
     Returns:
         Parameters for ``@modelcontextprotocol/server-github`` via npx.
     """
+    from dotenv import load_dotenv
+
+    load_dotenv("/app/.env")
+    load_dotenv()
+
     token = os.environ.get("GITHUB_TOKEN", os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", ""))
     if not token:
         msg = "GITHUB_TOKEN environment variable is required for the GitHub MCP server."
@@ -154,16 +161,50 @@ def get_crewai_tools(server_params: StdioServerParameters) -> list[BaseTool]:
         t_name = info["name"]
         t_desc = info["description"] or f"MCP tool {t_name}"
 
-        def _make_runner(name: str) -> Any:
-            def _runner(**kwargs: Any) -> str:
-                return asyncio.run(call_tool_direct(server_params, name, kwargs))
+        if t_name == "list_tree":
+            def list_tree(path: str = ".", max_depth: int = 4) -> str:
+                """List the directory tree rooted at path (relative to workspace)."""
+                return asyncio.run(call_tool_direct(server_params, "list_tree", {"path": path, "max_depth": max_depth}))
 
-            return _runner
+            tools.append(tool(list_tree))
+        elif t_name == "read_file":
+            def read_file(path: str, offset: int = 0, limit: int = 200) -> str:
+                """Read text file contents from offset to offset + limit.
 
-        fn = _make_runner(t_name)
-        fn.__name__ = t_name
-        fn.__doc__ = t_desc
-        tools.append(tool(fn))
+                Parameters:
+                - path: Relative path to the file in workspace (required).
+                - offset: 0-indexed line number to start reading from (default: 0).
+                - limit: Maximum number of lines to return (default: 200).
+
+                DO NOT use line_start or line_end. Use offset and limit.
+                """
+                return asyncio.run(call_tool_direct(server_params, "read_file", {"path": path, "offset": offset, "limit": limit}))
+
+            tools.append(tool(read_file))
+        elif t_name == "search_code":
+            def search_code(pattern: str, path: str = ".") -> str:
+                """Search for a regex pattern in files under path (relative to workspace)."""
+                return asyncio.run(call_tool_direct(server_params, "search_code", {"pattern": pattern, "path": path}))
+
+            tools.append(tool(search_code))
+        elif t_name == "write_file":
+            def write_file(path: str, content: str) -> str:
+                """Write text content to a file at path (relative to workspace)."""
+                return asyncio.run(call_tool_direct(server_params, "write_file", {"path": path, "content": content}))
+
+            tools.append(tool(write_file))
+        else:
+            def _make_runner(name: str) -> Any:
+                def _runner(**kwargs: Any) -> str:
+                    """Generic MCP tool runner."""
+                    return asyncio.run(call_tool_direct(server_params, name, kwargs))
+
+                return _runner
+
+            fn = _make_runner(t_name)
+            fn.__name__ = t_name
+            fn.__doc__ = t_desc
+            tools.append(tool(fn))
 
     return tools
 

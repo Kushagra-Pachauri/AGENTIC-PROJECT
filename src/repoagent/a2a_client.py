@@ -9,8 +9,10 @@ Handles:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -20,6 +22,7 @@ from typing import Any
 
 import httpx
 
+from repoagent.monitoring import EventType, get_event_logger, resolve_run_id
 from repoagent.schemas import Plan, PlannerOutput, ReviewReport, TestReport
 
 logger = logging.getLogger(__name__)
@@ -123,10 +126,12 @@ class A2AClient:
     def __init__(
         self,
         base_url: str,
-        timeout: float = 120.0,
+        timeout: float | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        if timeout is None:
+            timeout = float(os.environ.get("REPOAGENT_A2A_TIMEOUT", "300.0"))
         self.timeout = timeout
         self._client = http_client or httpx.Client(timeout=timeout)
 
@@ -243,10 +248,42 @@ class A2AClient:
         ws_path = Path(workspace).resolve()
         repo_reader._set_workspace(str(ws_path))
 
+        active_run = resolve_run_id(run_id)
+        evt_logger = get_event_logger()
+
         # 1. repo_reader.list_tree tool call
+        with contextlib.suppress(Exception):
+            evt_logger.log_event(
+                run_id=active_run,
+                event_type=EventType.TOOL_STARTED,
+                agent_name="repo-planner",
+                stage="analyze",
+                input_summary={
+                    "tool": "repo_reader.list_tree",
+                    "arguments": {"directory": ".", "max_depth": 4},
+                },
+            )
+
         t_tree_start = time.time()
         tree_text = repo_reader.list_tree(".", max_depth=4)
         t_tree_dur = time.time() - t_tree_start
+
+        from repoagent.security import InputSource, screen_input
+
+        tree_screening = screen_input(tree_text, source=InputSource.MCP_OUTPUT, run_id=active_run)
+        if tree_screening.is_suspicious and tree_screening.sanitized_content:
+            tree_text = tree_screening.sanitized_content
+
+        with contextlib.suppress(Exception):
+            evt_logger.log_event(
+                run_id=active_run,
+                event_type=EventType.TOOL_COMPLETED,
+                agent_name="repo-planner",
+                stage="analyze",
+                duration_s=round(t_tree_dur, 4),
+                output_summary=tree_text,
+            )
+
         if log_file:
             tool_entry = {
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -268,14 +305,50 @@ class A2AClient:
             "src/notes_app/app.py",
             "src/notes_app/auth.py",
             "src/notes_app/models.py",
+            "src/notes_app/notes.py",
             "tests/test_auth.py",
+            "tests/test_notes.py",
         ):
             cand_p = ws_path / candidate
             if cand_p.is_file():
+                with contextlib.suppress(Exception):
+                    evt_logger.log_event(
+                        run_id=active_run,
+                        event_type=EventType.TOOL_STARTED,
+                        agent_name="repo-planner",
+                        stage="analyze",
+                        input_summary={
+                            "tool": "repo_reader.read_file",
+                            "arguments": {"path": candidate, "offset": 0, "limit": 200},
+                        },
+                    )
+
                 t_read_start = time.time()
-                content = repo_reader.read_file(candidate, max_lines=200)
+                content = repo_reader.read_file(candidate, offset=0, limit=200)
                 t_read_dur = time.time() - t_read_start
-                files_context.append(f"--- {candidate} ---\n{content}")
+
+                from repoagent.security import screen_repository_content
+
+                screening = screen_repository_content(
+                    content, file_path=candidate, run_id=active_run
+                )
+                formatted_content = (
+                    screening.sanitized_content
+                    if screening.is_suspicious and screening.sanitized_content
+                    else content
+                )
+                files_context.append(f"--- {candidate} ---\n{formatted_content}")
+
+                with contextlib.suppress(Exception):
+                    evt_logger.log_event(
+                        run_id=active_run,
+                        event_type=EventType.TOOL_COMPLETED,
+                        agent_name="repo-planner",
+                        stage="analyze",
+                        duration_s=round(t_read_dur, 4),
+                        output_summary=content,
+                    )
+
                 if log_file:
                     tool_entry = {
                         "timestamp": datetime.now(UTC).isoformat(),
@@ -283,7 +356,7 @@ class A2AClient:
                         "agent": "repo-planner",
                         "task_id": run_id or "planner-task",
                         "tool": "repo_reader.read_file",
-                        "arguments": {"path": candidate, "max_lines": 200},
+                        "arguments": {"path": candidate, "offset": 0, "limit": 200},
                         "duration_s": round(t_read_dur, 4),
                         "status": "success",
                     }
@@ -308,15 +381,51 @@ class A2AClient:
                 f"\n### Additional Grounding Context / Correction Feedback:\n{extra_instruction}\n"
             )
 
+        with contextlib.suppress(Exception):
+            evt_logger.log_event(
+                run_id=active_run,
+                event_type=EventType.AGENT_STARTED,
+                agent_name="repo-planner",
+                stage="analyze",
+                input_summary={
+                    "requirement": requirement,
+                    "workspace": str(workspace),
+                },
+                metadata={"framework": "Google ADK"},
+            )
+
+        t_plan_start = time.time()
         raw_text = self.send_task(
             text=prompt,
             task_id=run_id,
             log_file=log_file,
             is_replay=is_replay,
         )
+        t_plan_dur = time.time() - t_plan_start
         clean = clean_json_text(raw_text)
         try:
             output = PlannerOutput.model_validate_json(clean)
+            with contextlib.suppress(Exception):
+                evt_logger.log_event(
+                    run_id=active_run,
+                    event_type=EventType.AGENT_COMPLETED,
+                    agent_name="repo-planner",
+                    stage="analyze",
+                    output_summary={
+                        "summary": output.plan.summary,
+                        "files_to_change": [f.model_dump() for f in output.plan.files_to_change],
+                        "steps": output.plan.steps,
+                        "risks": output.plan.risks,
+                        "repo_map": output.repo_map[:300] if output.repo_map else "",
+                    },
+                    duration_s=round(t_plan_dur, 4),
+                    metadata={
+                        "framework": "Google ADK",
+                        "files_count": len(output.plan.files_to_change),
+                        "prompt_tokens": max(1, len(prompt) // 4),
+                        "completion_tokens": max(1, len(raw_text) // 4),
+                    },
+                )
             return output
         except Exception as exc:
             msg = (
@@ -336,6 +445,8 @@ class A2AClient:
         is_replay: bool = False,
     ) -> ReviewReport:
         """Call the Code Reviewer ADK agent and strictly validate the returned ReviewReport."""
+        active_run = resolve_run_id(run_id)
+        evt_logger = get_event_logger()
         prompt = (
             "Review the proposed code changes against the Plan and deterministic TestReport.\n\n"
             f"### Plan Summary:\n{plan.summary}\n"
@@ -349,17 +460,58 @@ class A2AClient:
             f"### Git Diff from Disk:\n{diff}\n\n"
             "Evaluate code quality, security, and requirement adherence. "
             "Return valid JSON matching ReviewReport with 'verdict' ('approve'/'request_changes'), "
-            "'findings' (list of {severity, file, line, message}), and 'summary'."
+            "'findings' (list of {severity, file, line, message}), and a concise 'summary' in 1-2 sentences."
         )
+
+        with contextlib.suppress(Exception):
+            evt_logger.log_event(
+                run_id=active_run,
+                event_type=EventType.AGENT_STARTED,
+                agent_name="code-reviewer",
+                stage="review",
+                input_summary={
+                    "plan_summary": plan.summary,
+                    "test_passed": test_report.passed,
+                    "diff_lines": len(diff.splitlines()),
+                },
+                metadata={"framework": "Google ADK"},
+            )
+
+        t_rev_start = time.time()
         raw_text = self.send_task(
             text=prompt,
             task_id=run_id,
             log_file=log_file,
             is_replay=is_replay,
         )
+        t_rev_dur = time.time() - t_rev_start
         clean = clean_json_text(raw_text)
         try:
             output = ReviewReport.model_validate_json(clean)
+            if not output.provenance:
+                output.provenance = "authoritative_adk_reviewer"
+
+            with contextlib.suppress(Exception):
+                evt_logger.log_event(
+                    run_id=active_run,
+                    event_type=EventType.AGENT_COMPLETED,
+                    agent_name="code-reviewer",
+                    stage="review",
+                    output_summary={
+                        "verdict": output.verdict,
+                        "summary": output.summary,
+                        "findings_count": len(output.findings),
+                        "findings": [f.model_dump() for f in output.findings],
+                        "provenance": output.provenance,
+                    },
+                    duration_s=round(t_rev_dur, 4),
+                    metadata={
+                        "framework": "Google ADK",
+                        "verdict": output.verdict,
+                        "prompt_tokens": max(1, len(prompt) // 4),
+                        "completion_tokens": max(1, len(raw_text) // 4),
+                    },
+                )
             return output
         except Exception as exc:
             msg = (

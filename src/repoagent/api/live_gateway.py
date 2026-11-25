@@ -27,8 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(ROOT / ".env")
 
 # Set host execution environment defaults
-MODEL_NAME = os.environ.get("REPOAGENT_MODEL", "qwen2.5-coder:3b")
-OLLAMA_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
+MODEL_NAME = "qwen2.5-coder:3b"
+OLLAMA_URL = "http://localhost:11434/v1"
 
 os.environ["REPOAGENT_PROVIDER"] = "ollama"
 os.environ["REPOAGENT_MODEL"] = MODEL_NAME
