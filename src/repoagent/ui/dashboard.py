@@ -14,6 +14,7 @@ import html
 import json
 import os
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -632,15 +633,19 @@ def get_showcase_dirs() -> list[Path]:
     return [p.resolve() for p in fallback if p.is_dir()]
 
 
-def fetch_health(api_url: str = DEFAULT_API_URL, timeout: float = 3.0) -> dict[str, Any] | None:
+def fetch_health(api_url: str | None = DEFAULT_API_URL, timeout: float = 3.0) -> dict[str, Any] | None:
     """Fetch health diagnostics from FastAPI backend or return public showcase status."""
-    is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and not is_demo:
+    if api_url:
         try:
             with httpx.Client(timeout=timeout) as client:
-                resp = client.get(f"{api_url}/health")
+                resp = client.get(
+                    f"{api_url.rstrip('/')}/health",
+                    headers={"ngrok-skip-browser-warning": "1"},
+                )
                 if resp.status_code == 200:
-                    return resp.json()
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        return data
         except Exception:
             pass
     return {
@@ -654,11 +659,15 @@ def fetch_health(api_url: str = DEFAULT_API_URL, timeout: float = 3.0) -> dict[s
 
 
 def fetch_runs(
-    api_url: str = DEFAULT_API_URL, auth_token: str | None = None, timeout: float = 3.0
+    api_url: str | None = DEFAULT_API_URL, auth_token: str | None = None, timeout: float = 3.0
 ) -> list[dict[str, Any]]:
     """Fetch list of runs from FastAPI backend, falling back to disk in standalone/showcase mode."""
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and (not is_demo or auth_token):
+    runs_list: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    # 1. Query remote live gateway or local API if endpoint provided
+    if api_url and (not is_demo or auth_token or "ngrok" in str(api_url) or ":8008" in str(api_url)):
         headers = {"ngrok-skip-browser-warning": "1"}
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
@@ -669,13 +678,28 @@ def fetch_runs(
                     if resp.status_code == 200:
                         data = resp.json()
                         if data and isinstance(data, list):
-                            return data
+                            for r in data:
+                                rid = r.get("run_id")
+                                if rid and rid not in seen_ids:
+                                    if not r.get("execution_mode"):
+                                        is_synth = bool(r.get("is_synthetic") or "synthetic" in str(rid).lower())
+                                        is_rep = bool(r.get("is_replay") or "replay" in str(rid).lower())
+                                        is_mock = "mock" in str(rid).lower() or r.get("is_mock_test", False)
+                                        if is_synth:
+                                            r["execution_mode"] = "SYNTHETIC"
+                                        elif is_mock:
+                                            r["execution_mode"] = "MOCK"
+                                        elif is_rep:
+                                            r["execution_mode"] = "REPLAY"
+                                        else:
+                                            r["execution_mode"] = "LIVE"
+                                    runs_list.append(r)
+                                    seen_ids.add(rid)
+                            break
             except Exception:
                 pass
 
-    # Standalone / Showcase fallback from disk
-    runs_list: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    # 2. Standalone / Showcase fallback from disk
     for root_dir in get_showcase_dirs():
         for run_path in sorted(root_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not run_path.is_dir():
@@ -726,7 +750,7 @@ def fetch_runs(
 
 def fetch_run_details(
     run_id: str,
-    api_url: str = DEFAULT_API_URL,
+    api_url: str | None = DEFAULT_API_URL,
     auth_token: str | None = None,
     timeout: float = 3.0,
 ) -> dict[str, Any] | None:
@@ -734,7 +758,7 @@ def fetch_run_details(
     if not run_id:
         return None
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and (not is_demo or auth_token):
+    if api_url and (not is_demo or auth_token or "ngrok" in str(api_url) or ":8008" in str(api_url)):
         headers = {"ngrok-skip-browser-warning": "1"}
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
@@ -767,7 +791,7 @@ def fetch_run_events(
     run_id: str,
     offset: int = 0,
     limit: int = 100,
-    api_url: str = DEFAULT_API_URL,
+    api_url: str | None = DEFAULT_API_URL,
     auth_token: str | None = None,
     timeout: float = 3.0,
 ) -> list[dict[str, Any]]:
@@ -775,7 +799,7 @@ def fetch_run_events(
     if not run_id:
         return []
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and (not is_demo or auth_token):
+    if api_url and (not is_demo or auth_token or "ngrok" in str(api_url) or ":8008" in str(api_url)):
         headers = {"ngrok-skip-browser-warning": "1"}
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
@@ -1551,7 +1575,7 @@ def render_header(health: dict[str, Any] | None, active_run: dict[str, Any] | No
                 render_html('<span class="emerald-badge-pill pill-muted">&#9675; Idle</span>')
 
 
-def render_workbench(api_url: str) -> None:
+def render_workbench(api_url: str = DEFAULT_API_URL, auth_token: str | None = None) -> None:
     """Render the Requirement Input and Execution Workbench."""
     title_color = PALETTE["primary_text"]
     accent = PALETTE["neon_accent"]
@@ -1567,11 +1591,28 @@ def render_workbench(api_url: str) -> None:
         """
     )
 
-    allowed_repos = get_allowed_repos()
-    gw_url = st.session_state.get("gateway_url") or os.environ.get("REPOAGENT_GATEWAY_URL", "")
-    gw_token = st.session_state.get("gateway_token") or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+    st.markdown(
+        """
+        **Execution Guide:**
+        1. **Connect the Live Gateway** (under *Advanced Connection Settings* if executing remote live runs).
+        2. **Enter the software requirement** in the box below.
+        3. **Click Execute** to start the pipeline.
+        """
+    )
 
-    with st.expander("⚡ Remote Live Execution Gateway Connection", expanded=bool(gw_url)):
+    allowed_repos = get_allowed_repos()
+    gw_url = (
+        st.session_state.get("ui_gw_url")
+        or st.session_state.get("gateway_url")
+        or os.environ.get("REPOAGENT_GATEWAY_URL", "")
+    ).strip()
+    gw_token = (
+        st.session_state.get("ui_gw_token")
+        or st.session_state.get("gateway_token")
+        or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+    ).strip()
+
+    with st.expander("⚙️ Advanced Connection Settings", expanded=False):
         gw_c1, gw_c2 = st.columns(2)
         with gw_c1:
             gw_url = st.text_input(
@@ -1592,13 +1633,13 @@ def render_workbench(api_url: str) -> None:
             st.session_state["gateway_token"] = gw_token
 
     active_target_api = gw_url.strip() if gw_url.strip() else api_url
-    active_token = gw_token.strip() if gw_token.strip() else None
+    active_token = gw_token.strip() if gw_token.strip() else auth_token
 
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true") or (fetch_health(api_url) or {}).get("mode") == "public_showcase"
     if is_demo and not gw_url:
         st.info(
             "ℹ️ **Public Demo Mode Active**: Real sandboxed Docker test execution runs via the authenticated Live Gateway. "
-            "Explore genuine verified run **0f04e14907d7** below or connect your Live Gateway above to submit software changes."
+            "Explore genuine verified runs (such as **0f04e14907d7**) below or connect your Live Gateway in Advanced Connection Settings to execute changes."
         )
 
     wb_col1, wb_col2 = st.columns([3, 1])
@@ -1640,47 +1681,68 @@ def render_workbench(api_url: str) -> None:
         st.session_state["submitting"] = False
 
     submit_clicked = st.button(
-        "Run RepoAgent Pipeline",
+        "Execute Pipeline",
         type="primary",
         disabled=st.session_state["submitting"],
         key="ui_run_button",
     )
 
     if submit_clicked:
-        if is_demo and not active_target_api:
-            st.warning(
-                "⚠️ **Live Execution Restricted in Cloud Showcase**: Docker socket and host-level execution are disabled in cloud environments. "
-                "Connect your Live Gateway URL and Access Token above to execute live pipelines on your isolated Docker sandbox."
+        if is_demo and not (gw_url.strip() or (active_target_api and "offline" not in active_target_api and "localhost" not in active_target_api)):
+            st.error(
+                "❌ **Live Gateway Not Connected**: Please expand '⚙️ Advanced Connection Settings' above, enter your Live Gateway URL and Access Token, then click Execute Pipeline."
+            )
+            st.info(
+                "💡 **Public Demo Mode**: The dashboard is currently displaying curated historical runs. Live execution requires connecting your Live Gateway."
             )
             return
 
         v_req, err_req = validate_requirement_input(requirement_text)
         if not v_req:
-            st.error(err_req)
+            st.error(f"❌ **Invalid Requirement**: {err_req}")
             return
 
         v_repo, err_repo = validate_repo_input(repo_choice)
         if not v_repo:
-            st.error(err_repo)
+            st.error(f"❌ **Invalid Repository**: {err_repo}")
             return
 
         st.session_state["submitting"] = True
         try:
-            success, result = submit_new_run(
-                repo_url=repo_choice,
-                requirement=requirement_text,
-                max_retries=int(max_retries),
-                create_pr=bool(create_pr),
-                use_live_agents=bool(use_live_agents),
-                api_url=active_target_api,
-                auth_token=active_token,
-            )
+            with st.spinner("Submitting run to Live Gateway..."):
+                success, result = submit_new_run(
+                    repo_url=repo_choice,
+                    requirement=requirement_text,
+                    max_retries=int(max_retries),
+                    create_pr=bool(create_pr),
+                    use_live_agents=bool(use_live_agents),
+                    api_url=active_target_api,
+                    auth_token=active_token,
+                )
             if success and isinstance(result, dict):
-                st.success(f"Run initiated successfully: `{result.get('run_id')}`")
-                st.session_state["selected_run_id"] = result.get("run_id")
+                new_run_id = result.get("run_id")
+                st.success(f"✅ Run initiated successfully: `{new_run_id}`")
+                st.session_state["selected_run_id"] = new_run_id
+                # Record in session custom_runs immediately
+                if "custom_runs" not in st.session_state:
+                    st.session_state["custom_runs"] = {}
+                st.session_state["custom_runs"][new_run_id] = {
+                    "run_id": new_run_id,
+                    "status": str(result.get("status", "running")).lower(),
+                    "requirement": requirement_text.strip(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "execution_mode": "LIVE",
+                    "is_live_execution": True,
+                }
+                # Remove stale selector key so selectbox immediately selects new_run_id
+                st.session_state.pop("ui_run_selector", None)
                 st.rerun()
             else:
-                st.error(str(result))
+                st.error(f"❌ **Execution Gateway Error**: {result}")
+                st.info(
+                    "💡 **Public Demo Mode**: The submission could not be completed by the gateway. "
+                    "You can continue exploring genuine historical runs and full pipeline execution evidence in the catalog below."
+                )
         finally:
             st.session_state["submitting"] = False
 
@@ -2039,6 +2101,12 @@ def render_run_history(runs: list[dict[str, Any]], current_run_id: str) -> str:
             or kw in str(r.get("pr", {}).get("url", "")).lower()
         ]
 
+    # Guarantee current selected run is always visible and selectable even if filters differ
+    if current_run_id and not any(r.get("run_id") == current_run_id for r in filtered):
+        matching_current = [r for r in runs if r.get("run_id") == current_run_id]
+        if matching_current:
+            filtered.insert(0, matching_current[0])
+
     if not filtered:
         st.info("No historical runs match the specified filter.")
         return current_run_id
@@ -2070,6 +2138,11 @@ def render_run_history(runs: list[dict[str, Any]], current_run_id: str) -> str:
             default_idx = idx
             break
 
+    # Synchronize ui_run_selector with current_run_id so the selectbox does not stick to an old historical run
+    current_selected_opt = st.session_state.get("ui_run_selector", "")
+    if current_run_id and run_opts and not current_selected_opt.startswith(current_run_id):
+        st.session_state["ui_run_selector"] = run_opts[default_idx]
+
     selected_opt = st.selectbox(
         "Select Historical Run to Inspect", options=run_opts, index=default_idx, key="ui_run_selector"
     )
@@ -2085,27 +2158,28 @@ def render_run_history(runs: list[dict[str, Any]], current_run_id: str) -> str:
 if hasattr(st, "fragment"):
 
     @st.fragment(run_every=2)
-    def render_active_pipeline_fragment(run_id: str, api_url: str) -> None:
+    def render_active_pipeline_fragment(run_id: str, api_url: str = DEFAULT_API_URL, auth_token: str | None = None) -> None:
         """Isolated polling fragment executing strictly when run is active."""
-        run_data = fetch_run_details(run_id, api_url)
+        run_data = fetch_run_details(run_id, api_url, auth_token=auth_token)
         if not run_data:
             st.warning(f"Could not load active status for run {run_id}.")
             return
 
-        events = fetch_run_events(run_id, offset=0, limit=100, api_url=api_url)
+        events = fetch_run_events(run_id, offset=0, limit=100, api_url=api_url, auth_token=auth_token)
         stages = evaluate_all_stages(run_data, events)
 
         render_pipeline_view(stages, run_data)
 
         if is_terminal_or_stale(run_data):
             st.caption("Execution complete. Polling stopped.")
+            st.rerun()
 else:
 
-    def render_active_pipeline_fragment(run_id: str, api_url: str) -> None:
+    def render_active_pipeline_fragment(run_id: str, api_url: str = DEFAULT_API_URL, auth_token: str | None = None) -> None:
         """Fallback fragment when st.fragment is unavailable."""
-        run_data = fetch_run_details(run_id, api_url)
+        run_data = fetch_run_details(run_id, api_url, auth_token=auth_token)
         if run_data:
-            events = fetch_run_events(run_id, offset=0, limit=100, api_url=api_url)
+            events = fetch_run_events(run_id, offset=0, limit=100, api_url=api_url, auth_token=auth_token)
             stages = evaluate_all_stages(run_data, events)
             render_pipeline_view(stages, run_data)
 
@@ -2126,18 +2200,49 @@ def render_dashboard() -> None:
     # Inject Emerald Dark theme design system
     inject_emerald_theme_css()
 
-    api_url = DEFAULT_API_URL
-    health = fetch_health(api_url)
-    runs = fetch_runs(api_url)
+    gw_url = (
+        st.session_state.get("ui_gw_url")
+        or st.session_state.get("gateway_url")
+        or os.environ.get("REPOAGENT_GATEWAY_URL", "")
+    ).strip()
+    gw_token = (
+        st.session_state.get("ui_gw_token")
+        or st.session_state.get("gateway_token")
+        or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+    ).strip()
+
+    is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
+    if gw_url:
+        active_api = gw_url
+        active_token = gw_token if gw_token else None
+    elif is_demo:
+        active_api = ""
+        active_token = None
+    else:
+        active_api = DEFAULT_API_URL
+        active_token = gw_token if gw_token else None
+
+    health = fetch_health(active_api) if active_api else fetch_health(None)
+    runs = fetch_runs(active_api, auth_token=active_token)
+
+    # Merge newly initiated session runs if not already in fetched list
+    if "custom_runs" in st.session_state:
+        seen_ids = {r.get("run_id") for r in runs}
+        for cr_id, cr_data in reversed(st.session_state["custom_runs"].items()):
+            if cr_id not in seen_ids:
+                runs.insert(0, cr_data)
+                seen_ids.add(cr_id)
 
     # Manage selected run ID
-    if "selected_run_id" not in st.session_state:
+    if "selected_run_id" not in st.session_state or not st.session_state["selected_run_id"]:
         st.session_state["selected_run_id"] = runs[0].get("run_id") if runs else ""
 
     selected_run_id = st.session_state.get("selected_run_id", "")
 
     # Fetch details of selected run
-    run_data = fetch_run_details(selected_run_id, api_url) if selected_run_id else None
+    run_data = fetch_run_details(selected_run_id, active_api, auth_token=active_token) if selected_run_id else None
+    if not run_data and selected_run_id and "custom_runs" in st.session_state:
+        run_data = st.session_state["custom_runs"].get(selected_run_id)
 
     # 1. Header with live health pills
     render_header(health, run_data)
@@ -2145,7 +2250,7 @@ def render_dashboard() -> None:
     st.divider()
 
     # 2. Requirement Input Workbench
-    render_workbench(api_url)
+    render_workbench(active_api, active_token)
 
     st.divider()
 
@@ -2161,14 +2266,20 @@ def render_dashboard() -> None:
     st.divider()
 
     if not run_data:
-        st.info("No run selected. Initiate a new run or choose from history below.")
+        if selected_run_id:
+            st.error(
+                f"❌ **Run Details Unavailable**: Unable to load execution details for `{selected_run_id}` from the Live Gateway or disk storage. "
+                "The run may still be initializing or the gateway connection may have been interrupted."
+            )
+        else:
+            st.info("No run selected. Initiate a new run or choose from history below.")
     else:
         # 4. Reference-Inspired Connected Pipeline View
-        events = fetch_run_events(selected_run_id, offset=0, limit=100, api_url=api_url)
+        events = fetch_run_events(selected_run_id, offset=0, limit=100, api_url=active_api, auth_token=active_token)
         stages = evaluate_all_stages(run_data, events)
 
         if not is_terminal_or_stale(run_data):
-            render_active_pipeline_fragment(selected_run_id, api_url)
+            render_active_pipeline_fragment(selected_run_id, active_api, auth_token=active_token)
         else:
             render_pipeline_view(stages, run_data)
 
