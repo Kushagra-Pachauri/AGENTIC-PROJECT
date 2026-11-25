@@ -1,7 +1,7 @@
 {
   "run_id": "0f04e14907d7",
   "requirement": "In src/notes_app/notes.py, add the method to NotesService:\n    def search_notes_by_title(self, user_id: str, query: str) -> list[Note]:\n        query = query.lower()\n        return [n for n in self.list_notes(user_id) if query in n.title.lower()]\n\nIn tests/test_notes.py, add the unit test to TestNotes class:\n    def test_search_notes_by_title(self, app_with_user: NotesApp) -> None:\n        user = app_with_user.auth.get_user('alice')\n        assert user is not None\n        app_with_user.create_note('alice', 'Shopping', 'Buy milk')\n        app_with_user.create_note('alice', 'Grocery List', 'Wash lettuce')\n        app_with_user.create_note('alice', 'Homework', 'Study Python')\n        notes = app_with_user.notes.search_notes_by_title(user.id, 'shopping')\n        assert len(notes) == 1\n        assert notes[0].title == 'Shopping'\n        notes = app_with_user.notes.search_notes_by_title(user.id, 'Grocery list')\n        assert len(notes) == 1\n        assert notes[0].title == 'Grocery List'\n        notes = app_with_user.notes.search_notes_by_title(user.id, 'nonexistent')\n        assert len(notes) == 0\n",
-  "repo_url": "D:\\Agentic AI\\runs\\0f04e14907d7\\workspace",
+  "repo_url": "/workspace/runs\\0f04e14907d7\\workspace",
   "branch": "repoagent/0f04e14907d7",
   "repo_map": "The repository is structured into three main modules: `notes_app`, `auth`, and `models`. The `notes_app` module contains the `NotesApp`, `NotesService`, and `Note` classes. The `auth` module contains the `AuthService` and `User` classes. The `models` module contains the `Note` and `User` classes. The repository also includes test files for each module in the `tests` directory.",
   "plan": {
@@ -127,5 +127,6 @@
     "Execution capped after 2 correction iterations. Requires human intervention."
   ],
   "started_at": "2026-11-25T16:29:56.417488Z",
-  "finished_at": "2026-11-25T17:28:32.555128Z"
+  "finished_at": "2026-11-25T17:28:32.555128Z",
+  "execution_mode": "LIVE"
 }

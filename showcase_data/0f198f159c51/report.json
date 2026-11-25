@@ -1,0 +1,27 @@
+{
+  "run_id": "0f198f159c51",
+  "requirement": "In src/notes_app/notes.py, add the search_notes_by_title method to NotesService (Live Groq run stopped by token rate limit 429)",
+  "repo_url": "/workspace/runs\\0f198f159c51\\workspace",
+  "branch": "repoagent/0f198f159c51",
+  "repo_map": "",
+  "plan": null,
+  "changes": null,
+  "rejected_changes": [],
+  "test_reports": [],
+  "retry_count": 0,
+  "max_retries": 3,
+  "review": null,
+  "pr": null,
+  "is_replay": false,
+  "replay_label": "",
+  "is_live_execution": true,
+  "status": "needs_human",
+  "errors": [
+    "A2A Planner Agent failed: Failed to validate PlannerOutput from A2A Planner agent: 1 validation error for PlannerOutput\n  Invalid JSON: expected value at line 1 column 1 [type=json_invalid, input_value=\"Error code: 429 - {'erro...'rate_limit_exceeded'}}\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/json_invalid. Raw: Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `[REDACTED_ORG]` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198375, Requested 3433. Please try again in 13m1.055999999s. Need more tokens? Upgrade to Dev",
+    "Execution capped after 0 correction iterations. Requires human intervention."
+  ],
+  "started_at": "2026-11-25T15:32:39.553870Z",
+  "finished_at": "2026-11-25T15:32:48.870208Z",
+  "id": "536765bd-7ba6-4762-aec7-1ef18834de59",
+  "execution_mode": "LIVE"
+}
