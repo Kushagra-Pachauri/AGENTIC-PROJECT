@@ -653,19 +653,25 @@ def fetch_health(api_url: str = DEFAULT_API_URL, timeout: float = 3.0) -> dict[s
     }
 
 
-def fetch_runs(api_url: str = DEFAULT_API_URL, timeout: float = 3.0) -> list[dict[str, Any]]:
+def fetch_runs(
+    api_url: str = DEFAULT_API_URL, auth_token: str | None = None, timeout: float = 3.0
+) -> list[dict[str, Any]]:
     """Fetch list of runs from FastAPI backend, falling back to disk in standalone/showcase mode."""
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and not is_demo:
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.get(f"{api_url}/runs")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data:
-                        return data
-        except Exception:
-            pass
+    if api_url and (not is_demo or auth_token):
+        headers = {"ngrok-skip-browser-warning": "1"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        for ep in (f"{api_url.rstrip('/')}/api/v1/runs", f"{api_url.rstrip('/')}/runs"):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.get(ep, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data and isinstance(data, list):
+                            return data
+            except Exception:
+                pass
 
     # Standalone / Showcase fallback from disk
     runs_list: list[dict[str, Any]] = []
@@ -719,20 +725,30 @@ def fetch_runs(api_url: str = DEFAULT_API_URL, timeout: float = 3.0) -> list[dic
 
 
 def fetch_run_details(
-    run_id: str, api_url: str = DEFAULT_API_URL, timeout: float = 3.0
+    run_id: str,
+    api_url: str = DEFAULT_API_URL,
+    auth_token: str | None = None,
+    timeout: float = 3.0,
 ) -> dict[str, Any] | None:
     """Fetch structured run status and reports from FastAPI backend or local disk."""
     if not run_id:
         return None
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and not is_demo:
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.get(f"{api_url}/runs/{run_id}")
-                if resp.status_code == 200:
-                    return resp.json()
-        except Exception:
-            pass
+    if api_url and (not is_demo or auth_token):
+        headers = {"ngrok-skip-browser-warning": "1"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        for ep in (
+            f"{api_url.rstrip('/')}/api/v1/runs/{run_id}",
+            f"{api_url.rstrip('/')}/runs/{run_id}",
+        ):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.get(ep, headers=headers)
+                    if resp.status_code == 200:
+                        return resp.json()
+            except Exception:
+                pass
 
     # Standalone disk fallback
     for root_dir in get_showcase_dirs():
@@ -752,20 +768,32 @@ def fetch_run_events(
     offset: int = 0,
     limit: int = 100,
     api_url: str = DEFAULT_API_URL,
+    auth_token: str | None = None,
     timeout: float = 3.0,
 ) -> list[dict[str, Any]]:
     """Fetch recorded audit events for a run from FastAPI backend or local disk."""
     if not run_id:
         return []
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true")
-    if api_url and not is_demo:
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.get(f"{api_url}/runs/{run_id}/events?offset={offset}&limit={limit}")
-                if resp.status_code == 200:
-                    return resp.json().get("events", [])
-        except Exception:
-            pass
+    if api_url and (not is_demo or auth_token):
+        headers = {"ngrok-skip-browser-warning": "1"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        for ep in (
+            f"{api_url.rstrip('/')}/api/v1/runs/{run_id}/events?offset={offset}&limit={limit}",
+            f"{api_url.rstrip('/')}/runs/{run_id}/events?offset={offset}&limit={limit}",
+        ):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.get(ep, headers=headers)
+                    if resp.status_code == 200:
+                        res = resp.json()
+                        if isinstance(res, list):
+                            return res
+                        if isinstance(res, dict) and "events" in res:
+                            return res["events"]
+            except Exception:
+                pass
 
     # Standalone disk fallback
     events: list[dict[str, Any]] = []
@@ -790,9 +818,10 @@ def submit_new_run(
     create_pr: bool = False,
     use_live_agents: bool = True,
     api_url: str = DEFAULT_API_URL,
-    timeout: float = 10.0,
+    auth_token: str | None = None,
+    timeout: float = 15.0,
 ) -> tuple[bool, dict[str, Any] | str]:
-    """Submit a validated new run request to the FastAPI backend."""
+    """Submit a validated new run request to the FastAPI backend or Live Gateway."""
     v_repo, err_repo = validate_repo_input(repo_url)
     if not v_repo:
         return False, err_repo
@@ -807,20 +836,33 @@ def submit_new_run(
 
     payload = {
         "repo_url": repo_url.strip(),
+        "repo": repo_url.strip(),
         "requirement": requirement.strip(),
         "max_retries": max_retries,
         "create_pr": bool(create_pr),
         "use_live_agents": bool(use_live_agents),
     }
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{api_url}/runs", json=payload)
-            if resp.status_code == 201:
-                return True, resp.json()
-            return False, f"Backend rejected request ({resp.status_code}): {resp.text}"
-    except Exception as exc:
-        return False, f"Failed to connect to backend: {exc}"
+    headers = {"ngrok-skip-browser-warning": "1"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    base = api_url.rstrip("/")
+    endpoints = [f"{base}/api/v1/runs", f"{base}/runs"]
+    last_err = ""
+    for ep in endpoints:
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(ep, json=payload, headers=headers)
+                if resp.status_code == 201:
+                    return True, resp.json()
+                elif resp.status_code in (400, 401, 403, 429):
+                    return False, f"Gateway Error ({resp.status_code}): {resp.text}"
+                last_err = f"HTTP {resp.status_code}: {resp.text}"
+        except Exception as exc:
+            last_err = str(exc)
+
+    return False, f"Failed to submit run to gateway: {last_err}"
 
 
 # ---------------------------------------------------------------------------
@@ -1526,11 +1568,37 @@ def render_workbench(api_url: str) -> None:
     )
 
     allowed_repos = get_allowed_repos()
+    gw_url = st.session_state.get("gateway_url") or os.environ.get("REPOAGENT_GATEWAY_URL", "")
+    gw_token = st.session_state.get("gateway_token") or os.environ.get("REPOAGENT_AUTH_TOKEN", "")
+
+    with st.expander("⚡ Remote Live Execution Gateway Connection", expanded=bool(gw_url)):
+        gw_c1, gw_c2 = st.columns(2)
+        with gw_c1:
+            gw_url = st.text_input(
+                "Live Gateway URL",
+                value=gw_url,
+                placeholder="e.g. https://...ngrok-free.dev or http://localhost:8008",
+                key="ui_gw_url",
+            )
+            st.session_state["gateway_url"] = gw_url
+        with gw_c2:
+            gw_token = st.text_input(
+                "Gateway Access Token",
+                value=gw_token,
+                type="password",
+                placeholder="Bearer token",
+                key="ui_gw_token",
+            )
+            st.session_state["gateway_token"] = gw_token
+
+    active_target_api = gw_url.strip() if gw_url.strip() else api_url
+    active_token = gw_token.strip() if gw_token.strip() else None
+
     is_demo = os.environ.get("REPOAGENT_DEMO_MODE", "").lower() in ("1", "true") or (fetch_health(api_url) or {}).get("mode") == "public_showcase"
-    if is_demo:
+    if is_demo and not gw_url:
         st.info(
-            "ℹ️ **Public Demo Mode Active**: Real sandboxed Docker test execution and GitHub write operations run in local/CI environments with verified approvals. "
-            "Explore genuine verified run **0f04e14907d7** below with complete 11-stage pipeline, logs, and verified GitHub PR #7."
+            "ℹ️ **Public Demo Mode Active**: Real sandboxed Docker test execution runs via the authenticated Live Gateway. "
+            "Explore genuine verified run **0f04e14907d7** below or connect your Live Gateway above to submit software changes."
         )
 
     wb_col1, wb_col2 = st.columns([3, 1])
@@ -1579,10 +1647,10 @@ def render_workbench(api_url: str) -> None:
     )
 
     if submit_clicked:
-        if is_demo:
+        if is_demo and not active_target_api:
             st.warning(
-                "⚠️ **Live Execution Restricted in Cloud Showcase**: Docker socket and host-level execution are disabled in this cloud deployment for security. "
-                "Select run **0f04e14907d7** below to explore the verified execution evidence and real GitHub PR #7."
+                "⚠️ **Live Execution Restricted in Cloud Showcase**: Docker socket and host-level execution are disabled in cloud environments. "
+                "Connect your Live Gateway URL and Access Token above to execute live pipelines on your isolated Docker sandbox."
             )
             return
 
@@ -1604,7 +1672,8 @@ def render_workbench(api_url: str) -> None:
                 max_retries=int(max_retries),
                 create_pr=bool(create_pr),
                 use_live_agents=bool(use_live_agents),
-                api_url=api_url,
+                api_url=active_target_api,
+                auth_token=active_token,
             )
             if success and isinstance(result, dict):
                 st.success(f"Run initiated successfully: `{result.get('run_id')}`")
